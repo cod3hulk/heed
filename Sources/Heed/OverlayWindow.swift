@@ -21,6 +21,7 @@ final class OverlayWindow {
             backing: .buffered,
             defer: false
         )
+        panel.isReleasedWhenClosed = false  // Required under ARC — prevents autorelease double-free
         panel.isFloatingPanel = true
         panel.level = .floating
         panel.isOpaque = false

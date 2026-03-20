@@ -148,6 +148,7 @@ final class DownloadProgressWindow {
             defer: false
         )
         window.title = "Heed — Model Download"
+        window.isReleasedWhenClosed = false  // Required under ARC — prevents autorelease double-free
         window.contentView = contentView
         window.isMovableByWindowBackground = true
         window.center()
