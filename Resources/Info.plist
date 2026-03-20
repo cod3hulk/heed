@@ -22,5 +22,7 @@
     <string>Heed needs microphone access to record meeting audio.</string>
     <key>NSScreenCaptureUsageDescription</key>
     <string>Heed needs screen recording access to capture system audio.</string>
+    <key>NSAccessibilityUsageDescription</key>
+    <string>Heed needs Accessibility access to register global keyboard shortcuts.</string>
 </dict>
 </plist>
