@@ -3,6 +3,13 @@ import AppKit
 @main
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    static func main() {
+        let app = NSApplication.shared
+        let delegate = AppDelegate()
+        app.delegate = delegate
+        app.run()
+    }
+
     private var statusItem: NSStatusItem!
     private let stateMachine = RecorderStateMachine()
     private let audioCaptureService = AudioCaptureService()
@@ -23,7 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "hearingdevice.ear", accessibilityDescription: "Heed")
+            button.image = NSImage(systemSymbolName: "ear.fill", accessibilityDescription: "Heed")
         }
 
         let menu = NSMenu()
@@ -45,7 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setupOverlay() {
-        overlayWindow = OverlayWindow(stateMachine: stateMachine)
+        overlayWindow = OverlayWindow(stateMachine: stateMachine, audioCaptureService: audioCaptureService)
     }
 
     @objc private func toggleRecording() {
@@ -136,7 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             statusItem.button?.image = NSImage(systemSymbolName: "waveform.badge.mic", accessibilityDescription: "Heed — Recording")
         } else {
             recordingMenuItem.title = "Start Recording ⇧⌘R"
-            statusItem.button?.image = NSImage(systemSymbolName: "hearingdevice.ear", accessibilityDescription: "Heed")
+            statusItem.button?.image = NSImage(systemSymbolName: "ear.fill", accessibilityDescription: "Heed")
         }
     }
 
