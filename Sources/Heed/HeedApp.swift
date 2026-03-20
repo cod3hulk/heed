@@ -9,12 +9,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let transcriptionService = TranscriptionService()
     private var overlayWindow: OverlayWindow!
     private let settingsController = SettingsWindowController()
+    private let shortcutManager = GlobalShortcutManager()
     private var recordingMenuItem: NSMenuItem!
     private var currentTranscript: String = ""
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusItem()
         setupOverlay()
+        setupShortcuts()
     }
 
     private func setupStatusItem() {
@@ -76,10 +78,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateOverlayVisibility()
 
         Task {
-            let buffers = await audioCaptureService.stopCapture()
+            let samples = await audioCaptureService.stopCapture()
 
             do {
-                let transcript = try await transcriptionService.transcribe(buffers: buffers)
+                let transcript = try await transcriptionService.transcribe(samples: samples)
                 currentTranscript = transcript
                 stateMachine.transcriptionComplete(text: transcript)
                 updateOverlayVisibility()
@@ -109,6 +111,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 updateOverlayVisibility()
             }
         }
+    }
+
+    private func setupShortcuts() {
+        shortcutManager.register(
+            onToggleRecording: { [weak self] in
+                self?.toggleRecording()
+            },
+            onAction: { [weak self] action in
+                self?.handleAction(action)
+            }
+        )
     }
 
     @objc private func openSettings() {

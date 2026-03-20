@@ -1,13 +1,13 @@
-@preconcurrency import AVFoundation
+import Foundation
 
 @MainActor
 final class TranscriptionService {
     private static let chunkDurationSeconds: Double = 90.0
     private static let sampleRate: Double = 16000.0
 
-    func transcribe(buffers: [AVAudioPCMBuffer]) async throws -> String {
-        let merged = mergeBuffers(buffers)
-        let chunks = chunkAudio(merged)
+    /// Transcribe pre-mixed 16kHz mono Float32 samples
+    func transcribe(samples: [Float]) async throws -> String {
+        let chunks = chunkAudio(samples)
 
         var fullTranscript = ""
         for chunk in chunks {
@@ -22,16 +22,6 @@ final class TranscriptionService {
     }
 
     // MARK: - Audio Processing
-
-    private func mergeBuffers(_ buffers: [AVAudioPCMBuffer]) -> [Float] {
-        var samples: [Float] = []
-        for buffer in buffers {
-            guard let channelData = buffer.floatChannelData?[0] else { continue }
-            let count = Int(buffer.frameLength)
-            samples.append(contentsOf: UnsafeBufferPointer(start: channelData, count: count))
-        }
-        return samples
-    }
 
     private func chunkAudio(_ samples: [Float]) -> [[Float]] {
         let chunkSize = Int(Self.chunkDurationSeconds * Self.sampleRate)
@@ -53,9 +43,6 @@ final class TranscriptionService {
         // TODO: Integrate Parakeet TDT 0.6B V3 Core ML model
         // The model expects 16kHz mono Float32 audio
         // First run will trigger a one-time model download (~478 MB)
-        //
-        // For now, return a placeholder indicating the chunk was processed
-        // This will be replaced with actual Core ML inference
         throw TranscriptionError.modelNotLoaded
     }
 }
