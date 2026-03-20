@@ -1,52 +1,70 @@
 import AppKit
 import SwiftUI
+import FluidAudio
 
 @MainActor
 final class ModelManager {
     static let shared = ModelManager()
 
-    private let modelDirName = "parakeet-tdt-0.6b-v3"
-    private let repoID = "nvidia/parakeet-tdt-0.6b-v3"
+    private(set) var asrManager: AsrManager?
 
-    // Files needed for inference
-    private let requiredFiles = [
-        "model.onnx",
-        "tokenizer.json",
-        "config.json",
-        "preprocessor_config.json"
-    ]
+    // Held during download so the @Sendable progress handler can weakly reach it
+    private weak var activeProgressModel: DownloadProgressModel?
 
-    var modelDirectory: URL {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return appSupport.appendingPathComponent("Heed/Models/\(modelDirName)")
+    var isReady: Bool { asrManager?.isAvailable ?? false }
+
+    /// True if the Core ML model bundles are already on disk.
+    var isModelCached: Bool {
+        let encoder = AsrModels.defaultCacheDirectory()
+            .appendingPathComponent(ModelNames.ASR.encoderFile)
+        return FileManager.default.fileExists(atPath: encoder.path)
     }
 
-    var isModelDownloaded: Bool {
-        let fm = FileManager.default
-        // Check that the model directory exists and has at least the main model file
-        let modelFile = modelDirectory.appendingPathComponent("model.onnx")
-        return fm.fileExists(atPath: modelFile.path)
-    }
+    // MARK: - Public API
 
-    /// Shows download prompt if model is missing. Calls completion with true if model is available.
+    /// Called at launch (deferred off applicationDidFinishLaunching).
+    /// Loads silently if cached, otherwise prompts the user to download.
     func ensureModelAvailable(completion: @escaping (Bool) -> Void) {
-        if isModelDownloaded {
-            completion(true)
-            return
+        if isModelCached {
+            Task {
+                do {
+                    let models = try await AsrModels.loadFromCache()
+                    let mgr = AsrManager()
+                    try await mgr.initialize(models: models)
+                    self.asrManager = mgr
+                    completion(true)
+                } catch {
+                    print("Failed to load cached model: \(error)")
+                    completion(false)
+                }
+            }
+        } else {
+            showDownloadPrompt(completion: completion)
         }
-        showDownloadPrompt(completion: completion)
     }
+
+    func transcribe(_ samples: [Float]) async -> String? {
+        guard let asrManager, asrManager.isAvailable else { return nil }
+        do {
+            let result = try await asrManager.transcribe(samples, source: .microphone)
+            return result.text
+        } catch {
+            print("Transcription error: \(error)")
+            return nil
+        }
+    }
+
+    // MARK: - Download flow
 
     private func showDownloadPrompt(completion: @escaping (Bool) -> Void) {
         let alert = NSAlert()
         alert.messageText = "Download Transcription Model"
-        alert.informativeText = "Heed requires the Parakeet TDT 0.6B V3 model for local transcription. This is a one-time download (~478 MB).\n\nThe model will be downloaded from Hugging Face."
+        alert.informativeText = "Heed requires the Parakeet TDT 0.6B V3 model (~600 MB) for local, on-device transcription.\n\nThis is a one-time download from Hugging Face."
         alert.alertStyle = .informational
         alert.addButton(withTitle: "Download")
         alert.addButton(withTitle: "Later")
 
-        let response = alert.runModal()
-        if response == .alertFirstButtonReturn {
+        if alert.runModal() == .alertFirstButtonReturn {
             showDownloadProgress(completion: completion)
         } else {
             completion(false)
@@ -55,188 +73,60 @@ final class ModelManager {
 
     private func showDownloadProgress(completion: @escaping (Bool) -> Void) {
         let progressModel = DownloadProgressModel()
+        activeProgressModel = progressModel
         let downloadWindow = DownloadProgressWindow(model: progressModel)
         downloadWindow.show()
 
         Task {
-            let success = await downloadModel(progress: progressModel)
-            if success {
+            do {
+                let models = try await AsrModels.loadFromCache(progressHandler: { [weak self] progress in
+                    let fraction = progress.fractionCompleted
+                    Task { @MainActor [weak self] in
+                        self?.activeProgressModel?.overallProgress = fraction
+                        self?.activeProgressModel?.fileProgress = fraction
+                        self?.activeProgressModel?.status =
+                            "Downloading... \(Int(fraction * 100))%"
+                    }
+                })
+                let mgr = AsrManager()
+                try await mgr.initialize(models: models)
+                self.asrManager = mgr
+                progressModel.status = "Download complete!"
+                progressModel.overallProgress = 1.0
+                try? await Task.sleep(nanoseconds: 500_000_000)
                 downloadWindow.close()
                 completion(true)
-            } else {
+            } catch {
                 downloadWindow.close()
-                showDownloadError(completion: completion)
+                showDownloadError(error: error, completion: completion)
             }
         }
     }
 
-    private func showDownloadError(completion: @escaping (Bool) -> Void) {
+    private func showDownloadError(error: Error, completion: @escaping (Bool) -> Void) {
         let alert = NSAlert()
         alert.messageText = "Download Failed"
-        alert.informativeText = "Could not download the Parakeet model. Check your internet connection and try again."
+        alert.informativeText = "Could not download the model: \(error.localizedDescription)\n\nCheck your internet connection and try again."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Try Again")
         alert.addButton(withTitle: "Later")
 
-        let response = alert.runModal()
-        if response == .alertFirstButtonReturn {
+        if alert.runModal() == .alertFirstButtonReturn {
             showDownloadProgress(completion: completion)
         } else {
             completion(false)
         }
     }
-
-    private func downloadModel(progress: DownloadProgressModel) async -> Bool {
-        let fm = FileManager.default
-        do {
-            try fm.createDirectory(at: modelDirectory, withIntermediateDirectories: true)
-        } catch {
-            print("Failed to create model directory: \(error)")
-            return false
-        }
-
-        // First, discover available files from the HuggingFace API
-        let filesToDownload = await discoverModelFiles() ?? requiredFiles
-
-        let totalFiles = filesToDownload.count
-        for (index, filename) in filesToDownload.enumerated() {
-            let fileURL = modelDirectory.appendingPathComponent(filename)
-            if fm.fileExists(atPath: fileURL.path) {
-                await MainActor.run {
-                    progress.currentFile = filename
-                    progress.fileProgress = 1.0
-                    progress.overallProgress = Double(index + 1) / Double(totalFiles)
-                    progress.status = "Skipping \(filename) (already exists)"
-                }
-                continue
-            }
-
-            let downloadURL = URL(string: "https://huggingface.co/\(repoID)/resolve/main/\(filename)")!
-
-            await MainActor.run {
-                progress.currentFile = filename
-                progress.fileProgress = 0
-                progress.overallProgress = Double(index) / Double(totalFiles)
-                progress.status = "Downloading \(filename)..."
-            }
-
-            let success = await downloadFile(from: downloadURL, to: fileURL, progress: progress)
-            if !success {
-                await MainActor.run {
-                    progress.status = "Failed to download \(filename)"
-                }
-                return false
-            }
-
-            await MainActor.run {
-                progress.overallProgress = Double(index + 1) / Double(totalFiles)
-            }
-        }
-
-        await MainActor.run {
-            progress.status = "Download complete!"
-            progress.overallProgress = 1.0
-        }
-        return true
-    }
-
-    private func discoverModelFiles() async -> [String]? {
-        let apiURL = URL(string: "https://huggingface.co/api/models/\(repoID)")!
-        do {
-            let (data, _) = try await URLSession.shared.data(from: apiURL)
-            if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let siblings = json["siblings"] as? [[String: Any]] {
-                let filenames = siblings.compactMap { $0["rfilename"] as? String }
-                // Filter to essential files — skip large unnecessary files
-                let essentialExtensions = ["onnx", "json", "txt", "yaml", "yml"]
-                let filtered = filenames.filter { name in
-                    let ext = (name as NSString).pathExtension.lowercased()
-                    return essentialExtensions.contains(ext) || name == "LICENSE"
-                }
-                return filtered.isEmpty ? nil : filtered
-            }
-        } catch {
-            print("Failed to query HuggingFace API: \(error)")
-        }
-        return nil
-    }
-
-    private func downloadFile(from url: URL, to destination: URL, progress: DownloadProgressModel) async -> Bool {
-        let parentDir = destination.deletingLastPathComponent()
-        try? FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
-
-        return await withCheckedContinuation { continuation in
-            let delegate = DownloadDelegate(progress: progress, destination: destination) { success in
-                continuation.resume(returning: success)
-            }
-            let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
-            delegate.session = session  // Keep both alive until download completes
-            let task = session.downloadTask(with: url)
-            task.resume()
-        }
-    }
 }
 
-// MARK: - Download Progress Tracking
+// MARK: - Download Progress UI
 
 @MainActor
 final class DownloadProgressModel: ObservableObject {
     @Published var status: String = "Preparing download..."
-    @Published var currentFile: String = ""
     @Published var fileProgress: Double = 0
     @Published var overallProgress: Double = 0
 }
-
-final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
-    private let progress: DownloadProgressModel
-    private let destination: URL
-    private let onComplete: (Bool) -> Void
-    private var finished = false
-    // Retains the session so neither session nor delegate is deallocated
-    // while the download is in flight. Cleared in complete() to break the cycle.
-    var session: URLSession?
-
-    init(progress: DownloadProgressModel, destination: URL, completion: @escaping (Bool) -> Void) {
-        self.progress = progress
-        self.destination = destination
-        self.onComplete = completion
-    }
-
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
-        guard totalBytesExpectedToWrite > 0 else { return }
-        let fraction = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
-        let writtenMB = Double(totalBytesWritten) / 1_000_000
-        let totalMB = Double(totalBytesExpectedToWrite) / 1_000_000
-        Task { @MainActor [progress] in
-            progress.fileProgress = fraction
-            progress.status = String(format: "Downloading... %.0f / %.0f MB", writtenMB, totalMB)
-        }
-    }
-
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        do {
-            try FileManager.default.moveItem(at: location, to: destination)
-            complete(success: true)
-        } catch {
-            print("Failed to move downloaded file: \(error)")
-            complete(success: false)
-        }
-    }
-
-    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        guard !finished else { return }
-        if let error { print("Download error: \(error)") }
-        complete(success: false)
-    }
-
-    private func complete(success: Bool) {
-        finished = true
-        session = nil  // Break retain cycle: delegate no longer holds session
-        onComplete(success)
-    }
-}
-
-// MARK: - Download Progress Window
 
 @MainActor
 final class DownloadProgressWindow {
@@ -249,10 +139,10 @@ final class DownloadProgressWindow {
 
     func show() {
         let contentView = NSHostingView(rootView: DownloadProgressView(model: model))
-        contentView.frame = NSRect(x: 0, y: 0, width: 420, height: 160)
+        contentView.frame = NSRect(x: 0, y: 0, width: 420, height: 140)
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 160),
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 140),
             styleMask: [.titled, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -277,23 +167,15 @@ struct DownloadProgressView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Downloading Parakeet Model")
+            Text("Downloading Parakeet TDT 0.6B V3")
                 .font(.headline)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(model.status)
-                    .font(.system(size: 12))
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-
-                ProgressView(value: model.fileProgress)
-                    .progressViewStyle(.linear)
-            }
+            Text(model.status)
+                .font(.system(size: 12))
+                .foregroundColor(.secondary)
+                .lineLimit(1)
 
             HStack {
-                Text("Overall")
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
                 ProgressView(value: model.overallProgress)
                     .progressViewStyle(.linear)
                 Text("\(Int(model.overallProgress * 100))%")
@@ -303,6 +185,6 @@ struct DownloadProgressView: View {
             }
         }
         .padding(20)
-        .frame(width: 420, height: 160)
+        .frame(width: 420, height: 140)
     }
 }

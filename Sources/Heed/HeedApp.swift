@@ -21,13 +21,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusItem()
         requestPermissionsUpfront()
         setupGlobalShortcut()
-        checkModelAvailability()
+        // Defer past applicationDidFinishLaunching — runModal() inside this
+        // delegate method crashes AppKit's autorelease pool later.
+        DispatchQueue.main.async { self.checkModelAvailability() }
     }
 
     private func checkModelAvailability() {
         ModelManager.shared.ensureModelAvailable { available in
             if available {
-                print("Parakeet model ready at \(ModelManager.shared.modelDirectory.path)")
+                print("Parakeet model ready")
             } else {
                 print("Parakeet model not yet downloaded — transcription will be unavailable")
             }
@@ -117,16 +119,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if audioService.isRecording {
             overlay.hide()
             let samples = audioService.stopRecording()
-            let duration = Double(samples.count) / 16000.0
-            print("Captured \(samples.count) samples (\(String(format: "%.1f", duration))s of audio)")
-
-            // Save as WAV to Desktop for verification
-            let wavURL = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent("Desktop/heed-test.wav")
-            saveWAV(samples: samples, sampleRate: 16000, to: wavURL)
-            print("Saved to \(wavURL.path)")
-
             recordingMenuItem.title = "Start Recording"
+
+            guard ModelManager.shared.isReady else {
+                print("Model not ready — skipping transcription")
+                return
+            }
+            Task {
+                print("Transcribing \(String(format: "%.1f", Double(samples.count) / 16000))s of audio...")
+                if let transcript = await ModelManager.shared.transcribe(samples) {
+                    print("Transcript: \(transcript)")
+                    // TODO: surface in overlay / post-processing UI
+                }
+            }
         } else {
             do {
                 try audioService.startRecording()
