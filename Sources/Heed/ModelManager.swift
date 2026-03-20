@@ -170,6 +170,7 @@ final class ModelManager {
                 continuation.resume(returning: success)
             }
             let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+            delegate.session = session  // Keep both alive until download completes
             let task = session.downloadTask(with: url)
             task.resume()
         }
@@ -189,13 +190,16 @@ final class DownloadProgressModel: ObservableObject {
 final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
     private let progress: DownloadProgressModel
     private let destination: URL
-    private let completion: (Bool) -> Void
+    private let onComplete: (Bool) -> Void
     private var finished = false
+    // Retains the session so neither session nor delegate is deallocated
+    // while the download is in flight. Cleared in complete() to break the cycle.
+    var session: URLSession?
 
     init(progress: DownloadProgressModel, destination: URL, completion: @escaping (Bool) -> Void) {
         self.progress = progress
         self.destination = destination
-        self.completion = completion
+        self.onComplete = completion
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
@@ -212,19 +216,23 @@ final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, @unchecked S
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
         do {
             try FileManager.default.moveItem(at: location, to: destination)
-            finished = true
-            completion(true)
+            complete(success: true)
         } catch {
             print("Failed to move downloaded file: \(error)")
-            finished = true
-            completion(false)
+            complete(success: false)
         }
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         guard !finished else { return }
         if let error { print("Download error: \(error)") }
-        completion(false)
+        complete(success: false)
+    }
+
+    private func complete(success: Bool) {
+        finished = true
+        session = nil  // Break retain cycle: delegate no longer holds session
+        onComplete(success)
     }
 }
 
