@@ -5,8 +5,8 @@ import SwiftUI
 final class OverlayWindow {
     private var panel: NSPanel?
     private let waveformModel = WaveformModel()
-    private var displayLink: CVDisplayLink?
     private weak var audioServiceRef: AudioCaptureService?
+    private var levelTimer: Timer?
 
     func show(audioService: AudioCaptureService) {
         guard panel == nil else { return }
@@ -32,7 +32,6 @@ final class OverlayWindow {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.alphaValue = 0.92
 
-        // Position at bottom center of main screen
         if let screen = NSScreen.main {
             let screenFrame = screen.visibleFrame
             let x = screenFrame.midX - 240
@@ -43,18 +42,15 @@ final class OverlayWindow {
         panel.orderFrontRegardless()
         self.panel = panel
 
-        // Use a timer at 60fps for smooth waveform updates
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, let service = self.audioServiceRef else { return }
-                self.waveformModel.addLevel(service.currentLevel)
+                self.waveformModel.updateLevel(service.currentLevel)
             }
         }
         RunLoop.main.add(timer, forMode: .common)
         self.levelTimer = timer
     }
-
-    private var levelTimer: Timer?
 
     func hide() {
         levelTimer?.invalidate()
@@ -74,23 +70,42 @@ final class OverlayWindow {
 
 @MainActor
 final class WaveformModel: ObservableObject {
-    @Published var levels: [Float] = []
-    private let maxBars = 80
+    static let barCount = 112
+    @Published var barHeights: [Float] = Array(repeating: 0, count: WaveformModel.barCount)
+    private var phase: Double = 0
     private var smoothedLevel: Float = 0
 
-    func addLevel(_ rawLevel: Float) {
-        // Exponential smoothing for fluid motion
-        let smoothing: Float = 0.3
-        smoothedLevel = smoothedLevel * (1 - smoothing) + rawLevel * smoothing
-        levels.append(smoothedLevel)
-        if levels.count > maxBars {
-            levels.removeFirst(levels.count - maxBars)
+    func updateLevel(_ rawLevel: Float) {
+        // Smooth the input level
+        let attack: Float = rawLevel > smoothedLevel ? 0.5 : 0.1
+        smoothedLevel = smoothedLevel + attack * (rawLevel - smoothedLevel)
+
+        phase += 0.08
+
+        let count = WaveformModel.barCount
+        for i in 0..<count {
+            let pos = Float(i) / Float(count - 1)
+
+            // Multiple sine waves at different frequencies create organic variation
+            let wave1 = sin(Double(pos) * 4.0 * .pi + phase)
+            let wave2 = sin(Double(pos) * 7.0 * .pi + phase * 1.3) * 0.5
+            let wave3 = sin(Double(pos) * 11.0 * .pi + phase * 0.7) * 0.3
+            let combined = Float(wave1 + wave2 + wave3) / 1.8 // normalize to ~[-1, 1]
+
+            // Map combined wave to a bar height, scaled by audio level
+            let envelope = 0.15 + abs(combined) * 0.85
+            let target = smoothedLevel * envelope
+
+            // Smooth each bar individually for fluid motion
+            let barAttack: Float = target > barHeights[i] ? 0.3 : 0.08
+            barHeights[i] = barHeights[i] + barAttack * (target - barHeights[i])
         }
     }
 
     func reset() {
-        levels = []
+        barHeights = Array(repeating: 0, count: WaveformModel.barCount)
         smoothedLevel = 0
+        phase = 0
     }
 }
 
@@ -101,7 +116,7 @@ struct OverlayContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            WaveformView(levels: model.levels)
+            WaveformView(barHeights: model.barHeights)
                 .frame(maxWidth: .infinity)
                 .frame(height: 100)
                 .padding(.horizontal, 16)
@@ -160,41 +175,29 @@ struct PulsingDot: View {
 }
 
 struct WaveformView: View {
-    let levels: [Float]
+    let barHeights: [Float]
     private let barWidth: CGFloat = 2.5
     private let barSpacing: CGFloat = 1.5
 
     var body: some View {
         GeometryReader { geo in
-            let maxBars = Int(geo.size.width / (barWidth + barSpacing))
-            let displayLevels = paddedLevels(count: maxBars)
             let midY = geo.size.height / 2
+            let totalBarPitch = barWidth + barSpacing
+            let visibleCount = min(barHeights.count, Int(geo.size.width / totalBarPitch))
+            let totalWidth = CGFloat(visibleCount) * totalBarPitch - barSpacing
+            let offsetX = (geo.size.width - totalWidth) / 2
 
             Canvas { context, _ in
-                for (i, level) in displayLevels.enumerated() {
-                    // Mirror waveform: bars grow symmetrically from center
-                    let barHeight = max(1.5, CGFloat(level) * midY * 1.8)
-                    let x = CGFloat(i) * (barWidth + barSpacing)
+                for i in 0..<visibleCount {
+                    let level = barHeights[i]
+                    let barHeight = max(2, CGFloat(level) * midY * 1.8)
+                    let x = offsetX + CGFloat(i) * totalBarPitch
                     let y = midY - barHeight / 2
-
                     let rect = CGRect(x: x, y: y, width: barWidth, height: barHeight)
                     let path = Capsule().path(in: rect)
-
-                    // Gradient opacity: newer bars (right) are brighter
-                    let age = Float(i) / Float(max(1, maxBars - 1))
-                    let baseOpacity = Double(age * 0.6 + 0.2)
-                    let levelOpacity = Double(min(1.0, level * 2 + 0.3))
-                    context.fill(path, with: .color(.white.opacity(min(1.0, baseOpacity * levelOpacity + 0.15))))
+                    context.fill(path, with: .color(.white.opacity(0.85)))
                 }
             }
         }
-        .animation(.linear(duration: 1.0 / 60.0), value: levels.count)
-    }
-
-    private func paddedLevels(count: Int) -> [Float] {
-        if levels.count >= count {
-            return Array(levels.suffix(count))
-        }
-        return [Float](repeating: 0, count: count - levels.count) + levels
     }
 }
