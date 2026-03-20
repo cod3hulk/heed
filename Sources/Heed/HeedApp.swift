@@ -23,8 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "record.circle", accessibilityDescription: "Heed")
-            button.title = " Heed"
+            button.image = NSImage(systemSymbolName: "hearingdevice.ear", accessibilityDescription: "Heed")
         }
 
         let menu = NSMenu()
@@ -134,10 +133,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateMenuState() {
         if stateMachine.state.isRecording {
             recordingMenuItem.title = "Stop Recording ⇧⌘R"
-            statusItem.button?.image = NSImage(systemSymbolName: "record.circle.fill", accessibilityDescription: "Heed — Recording")
+            statusItem.button?.image = NSImage(systemSymbolName: "waveform.badge.mic", accessibilityDescription: "Heed — Recording")
         } else {
             recordingMenuItem.title = "Start Recording ⇧⌘R"
-            statusItem.button?.image = NSImage(systemSymbolName: "record.circle", accessibilityDescription: "Heed")
+            statusItem.button?.image = NSImage(systemSymbolName: "hearingdevice.ear", accessibilityDescription: "Heed")
         }
     }
 
