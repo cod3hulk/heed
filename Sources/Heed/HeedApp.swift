@@ -38,7 +38,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let menu = NSMenu()
 
-        recordingMenuItem = NSMenuItem(title: "Start Recording", action: #selector(toggleRecording), keyEquivalent: "")
+        recordingMenuItem = NSMenuItem(title: "Start Recording", action: #selector(toggleRecording), keyEquivalent: "r")
+        recordingMenuItem.keyEquivalentModifierMask = [.command, .shift]
         recordingMenuItem.target = self
         menu.addItem(recordingMenuItem)
 
