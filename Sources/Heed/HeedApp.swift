@@ -21,6 +21,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusItem()
         requestPermissionsUpfront()
         setupGlobalShortcut()
+        checkModelAvailability()
+    }
+
+    private func checkModelAvailability() {
+        ModelManager.shared.ensureModelAvailable { available in
+            if available {
+                print("Parakeet model ready at \(ModelManager.shared.modelDirectory.path)")
+            } else {
+                print("Parakeet model not yet downloaded — transcription will be unavailable")
+            }
+        }
     }
 
     private func setupGlobalShortcut() {
