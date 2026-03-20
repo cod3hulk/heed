@@ -1,50 +1,67 @@
 import AppKit
 import Carbon.HIToolbox
 
+private var globalShortcutCallback: (() -> Void)?
+
 @MainActor
 final class GlobalShortcutManager {
-    private var eventMonitors: [Any] = []
+    private var hotKeyRef: EventHotKeyRef?
+    private var handlerRef: EventHandlerRef?
     var onToggleRecording: (() -> Void)?
 
     func start() {
-        // Monitor when app is NOT focused
-        let globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            self?.handleKeyEvent(event)
-        }
-        if let globalMonitor {
-            eventMonitors.append(globalMonitor)
+        globalShortcutCallback = { [weak self] in
+            self?.onToggleRecording?()
         }
 
-        // Monitor when app IS focused (e.g., menu is open)
-        let localMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            if self?.isToggleShortcut(event) == true {
-                self?.handleKeyEvent(event)
-                return nil // consume the event
+        // Register Carbon hot key handler
+        var eventType = EventTypeSpec(
+            eventClass: OSType(kEventClassKeyboard),
+            eventKind: UInt32(kEventHotKeyPressed)
+        )
+
+        let handler: EventHandlerUPP = { _, event, _ -> OSStatus in
+            Task { @MainActor in
+                globalShortcutCallback?()
             }
-            return event
+            return noErr
         }
-        if let localMonitor {
-            eventMonitors.append(localMonitor)
-        }
+
+        InstallEventHandler(
+            GetApplicationEventTarget(),
+            handler,
+            1,
+            &eventType,
+            nil,
+            &handlerRef
+        )
+
+        // Register Cmd+Shift+R as global hotkey
+        var hotKeyID = EventHotKeyID(
+            signature: OSType(0x48454544), // "HEED"
+            id: 1
+        )
+        let modifiers = UInt32(cmdKey | shiftKey)
+
+        RegisterEventHotKey(
+            UInt32(kVK_ANSI_R),
+            modifiers,
+            hotKeyID,
+            GetApplicationEventTarget(),
+            0,
+            &hotKeyRef
+        )
     }
 
     func stop() {
-        for monitor in eventMonitors {
-            NSEvent.removeMonitor(monitor)
+        if let hotKeyRef {
+            UnregisterEventHotKey(hotKeyRef)
+            self.hotKeyRef = nil
         }
-        eventMonitors.removeAll()
-    }
-
-    private func handleKeyEvent(_ event: NSEvent) {
-        guard isToggleShortcut(event) else { return }
-        Task { @MainActor [weak self] in
-            self?.onToggleRecording?()
+        if let handlerRef {
+            RemoveEventHandler(handlerRef)
+            self.handlerRef = nil
         }
-    }
-
-    private func isToggleShortcut(_ event: NSEvent) -> Bool {
-        let requiredFlags: NSEvent.ModifierFlags = [.command, .shift]
-        let pressedFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        return pressedFlags == requiredFlags && event.keyCode == UInt16(kVK_ANSI_R)
+        globalShortcutCallback = nil
     }
 }
