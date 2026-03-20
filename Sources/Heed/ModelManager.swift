@@ -60,8 +60,29 @@ final class ModelManager {
 
         Task {
             let success = await downloadModel(progress: progressModel)
-            downloadWindow.close()
-            completion(success)
+            if success {
+                downloadWindow.close()
+                completion(true)
+            } else {
+                downloadWindow.close()
+                showDownloadError(completion: completion)
+            }
+        }
+    }
+
+    private func showDownloadError(completion: @escaping (Bool) -> Void) {
+        let alert = NSAlert()
+        alert.messageText = "Download Failed"
+        alert.informativeText = "Could not download the Parakeet model. Check your internet connection and try again."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Try Again")
+        alert.addButton(withTitle: "Later")
+
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            showDownloadProgress(completion: completion)
+        } else {
+            completion(false)
         }
     }
 
@@ -141,26 +162,16 @@ final class ModelManager {
     }
 
     private func downloadFile(from url: URL, to destination: URL, progress: DownloadProgressModel) async -> Bool {
-        // Create subdirectories if the file is nested
         let parentDir = destination.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
 
-        do {
-            let delegate = DownloadDelegate(progress: progress)
-            let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
-            let (tempURL, response) = try await session.download(from: url)
-
-            guard let httpResponse = response as? HTTPURLResponse,
-                  httpResponse.statusCode == 200 else {
-                print("Download failed with status: \((response as? HTTPURLResponse)?.statusCode ?? -1)")
-                return false
+        return await withCheckedContinuation { continuation in
+            let delegate = DownloadDelegate(progress: progress, destination: destination) { success in
+                continuation.resume(returning: success)
             }
-
-            try FileManager.default.moveItem(at: tempURL, to: destination)
-            return true
-        } catch {
-            print("Download error for \(url): \(error)")
-            return false
+            let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+            let task = session.downloadTask(with: url)
+            task.resume()
         }
     }
 }
@@ -177,9 +188,14 @@ final class DownloadProgressModel: ObservableObject {
 
 final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
     private let progress: DownloadProgressModel
+    private let destination: URL
+    private let completion: (Bool) -> Void
+    private var finished = false
 
-    init(progress: DownloadProgressModel) {
+    init(progress: DownloadProgressModel, destination: URL, completion: @escaping (Bool) -> Void) {
         self.progress = progress
+        self.destination = destination
+        self.completion = completion
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
@@ -194,7 +210,21 @@ final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, @unchecked S
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        // Handled in the async download call
+        do {
+            try FileManager.default.moveItem(at: location, to: destination)
+            finished = true
+            completion(true)
+        } catch {
+            print("Failed to move downloaded file: \(error)")
+            finished = true
+            completion(false)
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        guard !finished else { return }
+        if let error { print("Download error: \(error)") }
+        completion(false)
     }
 }
 
