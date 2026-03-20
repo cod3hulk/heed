@@ -8,7 +8,10 @@ let package = Package(
         .executableTarget(
             name: "Heed",
             path: "Sources/Heed",
-            swiftSettings: [.unsafeFlags(["-parse-as-library"])]
+            swiftSettings: [
+                .unsafeFlags(["-parse-as-library"]),
+                .swiftLanguageMode(.v5)
+            ]
         )
     ]
 )

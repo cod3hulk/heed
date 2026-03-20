@@ -1,8 +1,13 @@
 import AppKit
+import AVFoundation
 
 @main
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var statusItem: NSStatusItem!
+    private let audioService = AudioCaptureService()
+    private var recordingMenuItem: NSMenuItem!
+
     static func main() {
         let app = NSApplication.shared
         let delegate = AppDelegate()
@@ -10,20 +15,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         app.run()
     }
 
-    private var statusItem: NSStatusItem!
-    private let stateMachine = RecorderStateMachine()
-    private let audioCaptureService = AudioCaptureService()
-    private let transcriptionService = TranscriptionService()
-    private var overlayWindow: OverlayWindow!
-    private let settingsController = SettingsWindowController()
-    private let shortcutManager = GlobalShortcutManager()
-    private var recordingMenuItem: NSMenuItem!
-    private var currentTranscript: String = ""
-
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusItem()
-        setupOverlay()
-        setupShortcuts()
+        requestPermissionsUpfront()
     }
 
     private func setupStatusItem() {
@@ -35,15 +29,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let menu = NSMenu()
 
-        recordingMenuItem = NSMenuItem(title: "Start Recording ⇧⌘R", action: #selector(toggleRecording), keyEquivalent: "")
+        recordingMenuItem = NSMenuItem(title: "Start Recording", action: #selector(toggleRecording), keyEquivalent: "")
         recordingMenuItem.target = self
         menu.addItem(recordingMenuItem)
-
-        menu.addItem(NSMenuItem.separator())
-
-        let settingsItem = NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ",")
-        settingsItem.target = self
-        menu.addItem(settingsItem)
 
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
@@ -51,108 +39,78 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = menu
     }
 
-    private func setupOverlay() {
-        overlayWindow = OverlayWindow(stateMachine: stateMachine, audioCaptureService: audioCaptureService)
+    private func requestPermissionsUpfront() {
+        // Request mic permission on launch so the app restart happens
+        // before the user tries to record, not during recording
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .audio) { granted in
+                print("Microphone permission \(granted ? "granted" : "denied")")
+            }
+        case .denied, .restricted:
+            print("Microphone permission denied. Please enable in System Settings > Privacy & Security > Microphone.")
+        case .authorized:
+            print("Microphone permission already granted")
+        @unknown default:
+            break
+        }
+    }
+
+    private func saveWAV(samples: [Float], sampleRate: Int, to url: URL) {
+        let bytesPerSample = 2 // 16-bit PCM
+        let dataSize = samples.count * bytesPerSample
+        let fileSize = 44 + dataSize
+
+        var data = Data()
+
+        // RIFF header
+        data.append(contentsOf: "RIFF".utf8)
+        data.append(contentsOf: withUnsafeBytes(of: UInt32(fileSize - 8).littleEndian) { Array($0) })
+        data.append(contentsOf: "WAVE".utf8)
+
+        // fmt chunk
+        data.append(contentsOf: "fmt ".utf8)
+        data.append(contentsOf: withUnsafeBytes(of: UInt32(16).littleEndian) { Array($0) })
+        data.append(contentsOf: withUnsafeBytes(of: UInt16(1).littleEndian) { Array($0) }) // PCM
+        data.append(contentsOf: withUnsafeBytes(of: UInt16(1).littleEndian) { Array($0) }) // mono
+        data.append(contentsOf: withUnsafeBytes(of: UInt32(sampleRate).littleEndian) { Array($0) })
+        data.append(contentsOf: withUnsafeBytes(of: UInt32(sampleRate * bytesPerSample).littleEndian) { Array($0) })
+        data.append(contentsOf: withUnsafeBytes(of: UInt16(bytesPerSample).littleEndian) { Array($0) })
+        data.append(contentsOf: withUnsafeBytes(of: UInt16(16).littleEndian) { Array($0) }) // bits per sample
+
+        // data chunk
+        data.append(contentsOf: "data".utf8)
+        data.append(contentsOf: withUnsafeBytes(of: UInt32(dataSize).littleEndian) { Array($0) })
+
+        for sample in samples {
+            let clamped = max(-1.0, min(1.0, sample))
+            let int16 = Int16(clamped * 32767)
+            data.append(contentsOf: withUnsafeBytes(of: int16.littleEndian) { Array($0) })
+        }
+
+        try? data.write(to: url)
     }
 
     @objc private func toggleRecording() {
-        if stateMachine.state == .idle {
-            startRecording()
-        } else if stateMachine.state.isRecording {
-            stopRecording()
-        }
-    }
+        if audioService.isRecording {
+            let samples = audioService.stopRecording()
+            let duration = Double(samples.count) / 16000.0
+            print("Captured \(samples.count) samples (\(String(format: "%.1f", duration))s of audio)")
 
-    private func startRecording() {
-        stateMachine.toggleRecording()
-        updateMenuState()
-        updateOverlayVisibility()
+            // Save as WAV to Desktop for verification
+            let wavURL = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Desktop/heed-test.wav")
+            saveWAV(samples: samples, sampleRate: 16000, to: wavURL)
+            print("Saved to \(wavURL.path)")
 
-        Task {
-            do {
-                try await audioCaptureService.startCapture()
-            } catch {
-                stateMachine.fail(message: "Failed to start capture: \(error)")
-                updateMenuState()
-                updateOverlayVisibility()
-            }
-        }
-    }
-
-    private func stopRecording() {
-        stateMachine.toggleRecording()
-        updateMenuState()
-        updateOverlayVisibility()
-
-        Task {
-            let samples = await audioCaptureService.stopCapture()
-
-            do {
-                let transcript = try await transcriptionService.transcribe(samples: samples)
-                currentTranscript = transcript
-                stateMachine.transcriptionComplete(text: transcript)
-                updateOverlayVisibility()
-            } catch {
-                stateMachine.fail(message: "Transcription failed: \(error)")
-                updateMenuState()
-                updateOverlayVisibility()
-            }
-        }
-    }
-
-    func handleAction(_ action: PostTranscriptionAction) {
-        stateMachine.selectAction(action)
-        updateOverlayVisibility()
-
-        let config = ConfigManager.shared
-        let provider = config.createProvider()
-        let prompt = config.prompt(for: action)
-        let transcript = currentTranscript
-
-        Task {
-            do {
-                let result = try await provider.process(transcript: transcript, prompt: prompt)
-                stateMachine.processingComplete(result: result)
-                updateOverlayVisibility()
-            } catch {
-                stateMachine.fail(message: "LLM processing failed: \(error)")
-                updateMenuState()
-                updateOverlayVisibility()
-            }
-        }
-    }
-
-    private func setupShortcuts() {
-        shortcutManager.register(
-            onToggleRecording: { [weak self] in
-                self?.toggleRecording()
-            },
-            onAction: { [weak self] action in
-                self?.handleAction(action)
-            }
-        )
-    }
-
-    @objc private func openSettings() {
-        settingsController.show()
-    }
-
-    private func updateMenuState() {
-        if stateMachine.state.isRecording {
-            recordingMenuItem.title = "Stop Recording ⇧⌘R"
-            statusItem.button?.image = NSImage(systemSymbolName: "waveform.badge.mic", accessibilityDescription: "Heed — Recording")
+            recordingMenuItem.title = "Start Recording"
         } else {
-            recordingMenuItem.title = "Start Recording ⇧⌘R"
-            statusItem.button?.image = NSImage(systemSymbolName: "ear.fill", accessibilityDescription: "Heed")
-        }
-    }
-
-    private func updateOverlayVisibility() {
-        switch stateMachine.state {
-        case .idle:
-            overlayWindow.orderOut(nil)
-        default:
-            overlayWindow.orderFront(nil)
+            do {
+                try audioService.startRecording()
+                recordingMenuItem.title = "Stop Recording"
+            } catch {
+                print("Failed to start recording: \(error)")
+            }
         }
     }
 }

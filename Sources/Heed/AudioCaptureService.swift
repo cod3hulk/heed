@@ -1,9 +1,8 @@
 @preconcurrency import AVFoundation
-@preconcurrency import ScreenCaptureKit
 import os
 
 /// Thread-safe buffer for collecting audio samples from realtime callbacks
-private final class AudioSampleCollector: @unchecked Sendable {
+final class AudioSampleCollector: @unchecked Sendable {
     private let lock = OSAllocatedUnfairLock()
     private var samples: [Float] = []
     private var _level: Float = 0
@@ -12,16 +11,13 @@ private final class AudioSampleCollector: @unchecked Sendable {
         lock.withLock { _level }
     }
 
-    func append(_ buffer: AVAudioPCMBuffer, updateLevel: Bool = false) {
-        guard let channelData = buffer.floatChannelData?[0] else { return }
-        let count = Int(buffer.frameLength)
-        let newSamples = Array(UnsafeBufferPointer(start: channelData, count: count))
+    func append(_ newSamples: [Float], updateLevel: Bool = false) {
         lock.withLock {
             samples.append(contentsOf: newSamples)
-            if updateLevel {
+            if updateLevel && !newSamples.isEmpty {
                 var sum: Float = 0
                 for s in newSamples { sum += s * s }
-                let rms = sqrtf(sum / max(1, Float(count)))
+                let rms = sqrtf(sum / Float(newSamples.count))
                 _level = min(1.0, rms * 10)
             }
         }
@@ -44,224 +40,97 @@ private final class AudioSampleCollector: @unchecked Sendable {
     }
 }
 
-/// Resample any audio buffer to 16kHz mono Float32 — free function, no actor isolation
-private func resampleTo16kMono(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
-    let targetFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
-
-    if buffer.format.sampleRate == targetFormat.sampleRate && buffer.format.channelCount == targetFormat.channelCount {
-        return buffer
-    }
-    guard let converter = AVAudioConverter(from: buffer.format, to: targetFormat) else {
-        return nil
-    }
-
-    let capacity = AVAudioFrameCount(
-        Double(buffer.frameLength) * (targetFormat.sampleRate / buffer.format.sampleRate)
-    )
-    guard capacity > 0, let outputBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else {
-        return nil
-    }
-
-    var error: NSError?
-    let inputBuffer = buffer
-    nonisolated(unsafe) var consumed = false
-    converter.convert(to: outputBuffer, error: &error) { _, outStatus in
-        if consumed {
-            outStatus.pointee = .noDataNow
-            return nil
-        }
-        consumed = true
-        outStatus.pointee = .haveData
-        return inputBuffer
-    }
-
-    if error != nil {
-        return nil
-    }
-    return outputBuffer
-}
-
 @MainActor
 final class AudioCaptureService {
-    private var systemAudioStream: SCStream?
     private var micEngine: AVAudioEngine?
-    private let systemCollector = AudioSampleCollector()
-    private let micCollector = AudioSampleCollector()
-    private var systemAudioDelegate: SystemAudioDelegate?
+    let micCollector = AudioSampleCollector()
+    private var inputSampleRate: Double = 48000
 
-    /// Current mic audio level (0.0–1.0) for waveform visualization
     var currentLevel: Float {
         micCollector.level
     }
 
-    func startCapture() async throws {
-        systemCollector.reset()
+    var isRecording: Bool {
+        micEngine != nil
+    }
+
+    func startRecording() throws {
         micCollector.reset()
 
-        // Try system audio + mic simultaneously
-        // Fall back to mic-only if system audio unavailable within 500ms
-        let systemAvailable = await startSystemAudioWithTimeout()
-        if !systemAvailable {
-            print("System audio unavailable, falling back to mic-only")
-        }
-        try startMicCapture()
-    }
-
-    /// Returns mixed 16kHz mono Float32 samples
-    func stopCapture() async -> [Float] {
-        await stopSystemAudioCapture()
-        stopMicCapture()
-        let systemSamples = systemCollector.drain()
-        let micSamples = micCollector.drain()
-        return mixSamples(system: systemSamples, mic: micSamples)
-    }
-
-    // MARK: - Mixing
-
-    private func mixSamples(system: [Float], mic: [Float]) -> [Float] {
-        if system.isEmpty { return mic }
-        if mic.isEmpty { return system }
-
-        let length = max(system.count, mic.count)
-        var mixed = [Float](repeating: 0, count: length)
-        for i in 0..<length {
-            let s = i < system.count ? system[i] : 0
-            let m = i < mic.count ? mic[i] : 0
-            mixed[i] = max(-1.0, min(1.0, s + m))
-        }
-        return mixed
-    }
-
-    // MARK: - System Audio (ScreenCaptureKit)
-
-    private func startSystemAudioWithTimeout() async -> Bool {
-        do {
-            return try await withThrowingTaskGroup(of: Bool.self) { group in
-                group.addTask {
-                    try await self.startSystemAudioCapture()
-                }
-                group.addTask {
-                    try await Task.sleep(for: .milliseconds(500))
-                    throw CancellationError()
-                }
-                let result = try await group.next() ?? false
-                group.cancelAll()
-                return result
-            }
-        } catch {
-            return false
-        }
-    }
-
-    private func startSystemAudioCapture() async throws -> Bool {
-        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
-
-        guard let display = content.displays.first else {
-            return false
-        }
-
-        let filter = SCContentFilter(display: display, excludingWindows: [])
-        let config = SCStreamConfiguration()
-        config.capturesAudio = true
-        config.excludesCurrentProcessAudio = true
-        config.sampleRate = 48000
-        config.channelCount = 2
-
-        let stream = SCStream(filter: filter, configuration: config, delegate: nil)
-        let collector = systemCollector
-        let delegate = SystemAudioDelegate { sampleBuffer in
-            guard let pcmBuffer = sampleBuffer.asPCMBuffer() else { return }
-            if let resampled = resampleTo16kMono(pcmBuffer) {
-                collector.append(resampled)
-            }
-        }
-        self.systemAudioDelegate = delegate
-        try stream.addStreamOutput(delegate, type: .audio, sampleHandlerQueue: .main)
-
-        try await stream.startCapture()
-
-        self.systemAudioStream = stream
-        return true
-    }
-
-    private func stopSystemAudioCapture() async {
-        guard let stream = systemAudioStream else { return }
-        try? await stream.stopCapture()
-        systemAudioStream = nil
-        systemAudioDelegate = nil
-    }
-
-    // MARK: - Microphone (AVAudioEngine)
-
-    private func startMicCapture() throws {
         let engine = AVAudioEngine()
         let inputNode = engine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)
+        inputSampleRate = inputFormat.sampleRate
         let collector = micCollector
 
+        // The tap closure runs on a realtime audio thread.
+        // We MUST NOT reference any actor-isolated state or types here.
+        // Just copy raw floats into the collector.
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, _ in
-            if let resampled = resampleTo16kMono(buffer) {
-                collector.append(resampled, updateLevel: true)
+            guard let channelData = buffer.floatChannelData else { return }
+            let frameCount = Int(buffer.frameLength)
+            let channelCount = Int(buffer.format.channelCount)
+
+            // Mix all channels to mono by averaging
+            var monoSamples = [Float](repeating: 0, count: frameCount)
+            for ch in 0..<channelCount {
+                let channel = channelData[ch]
+                for i in 0..<frameCount {
+                    monoSamples[i] += channel[i]
+                }
             }
+            if channelCount > 1 {
+                let scale = 1.0 / Float(channelCount)
+                for i in 0..<frameCount {
+                    monoSamples[i] *= scale
+                }
+            }
+
+            collector.append(monoSamples, updateLevel: true)
         }
 
         engine.prepare()
         try engine.start()
         self.micEngine = engine
+        print("Recording started at \(inputFormat.sampleRate) Hz, \(inputFormat.channelCount) ch")
     }
 
-    private func stopMicCapture() {
+    func stopRecording() -> [Float] {
         micEngine?.inputNode.removeTap(onBus: 0)
         micEngine?.stop()
         micEngine = nil
-    }
-}
 
-// MARK: - SCStream Audio Output Delegate
+        let rawSamples = micCollector.drain()
+        print("Recording stopped, captured \(rawSamples.count) raw samples")
 
-private final class SystemAudioDelegate: NSObject, SCStreamOutput, @unchecked Sendable {
-    private let handler: @Sendable (CMSampleBuffer) -> Void
-
-    init(handler: @escaping @Sendable (CMSampleBuffer) -> Void) {
-        self.handler = handler
+        // Resample to 16kHz on the main thread where it's safe
+        return resampleTo16k(rawSamples, fromRate: inputSampleRate)
     }
 
-    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard type == .audio else { return }
-        handler(sampleBuffer)
-    }
-}
-
-// MARK: - CMSampleBuffer to PCMBuffer
-
-extension CMSampleBuffer {
-    func asPCMBuffer() -> AVAudioPCMBuffer? {
-        guard let formatDescription = formatDescription,
-              let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription) else {
-            return nil
+    /// Simple linear interpolation resampling — no AVAudioConverter needed
+    private func resampleTo16k(_ samples: [Float], fromRate: Double) -> [Float] {
+        let targetRate = 16000.0
+        if abs(fromRate - targetRate) < 1.0 {
+            return samples // Already at target rate
         }
 
-        guard let format = AVAudioFormat(streamDescription: asbd),
-              let blockBuffer = CMSampleBufferGetDataBuffer(self) else {
-            return nil
+        let ratio = fromRate / targetRate
+        let outputCount = Int(Double(samples.count) / ratio)
+        guard outputCount > 0 else { return [] }
+
+        var output = [Float](repeating: 0, count: outputCount)
+        for i in 0..<outputCount {
+            let srcIndex = Double(i) * ratio
+            let idx = Int(srcIndex)
+            let frac = Float(srcIndex - Double(idx))
+
+            if idx + 1 < samples.count {
+                output[i] = samples[idx] * (1.0 - frac) + samples[idx + 1] * frac
+            } else if idx < samples.count {
+                output[i] = samples[idx]
+            }
         }
 
-        let frameCount = CMSampleBufferGetNumSamples(self)
-        guard let pcmBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frameCount)) else {
-            return nil
-        }
-        pcmBuffer.frameLength = AVAudioFrameCount(frameCount)
-
-        var dataPointer: UnsafeMutablePointer<Int8>?
-        var lengthAtOffset: Int = 0
-        var totalLength: Int = 0
-
-        let status = CMBlockBufferGetDataPointer(blockBuffer, atOffset: 0, lengthAtOffsetOut: &lengthAtOffset, totalLengthOut: &totalLength, dataPointerOut: &dataPointer)
-        guard status == noErr, let data = dataPointer else {
-            return nil
-        }
-
-        memcpy(pcmBuffer.floatChannelData?[0], data, totalLength)
-        return pcmBuffer
+        return output
     }
 }
