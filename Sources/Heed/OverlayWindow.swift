@@ -5,10 +5,12 @@ import SwiftUI
 final class OverlayWindow {
     private var panel: NSPanel?
     private let waveformModel = WaveformModel()
-    private var levelTimer: Timer?
+    private var displayLink: CVDisplayLink?
+    private weak var audioServiceRef: AudioCaptureService?
 
     func show(audioService: AudioCaptureService) {
         guard panel == nil else { return }
+        audioServiceRef = audioService
 
         let contentView = NSHostingView(rootView: OverlayContentView(model: waveformModel))
         contentView.frame = NSRect(x: 0, y: 0, width: 480, height: 160)
@@ -28,6 +30,7 @@ final class OverlayWindow {
         panel.isMovableByWindowBackground = true
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.alphaValue = 0.92
 
         // Position at bottom center of main screen
         if let screen = NSScreen.main {
@@ -40,15 +43,18 @@ final class OverlayWindow {
         panel.orderFrontRegardless()
         self.panel = panel
 
-        // Poll audio level at 30fps for waveform animation
-        levelTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+        // Use a timer at 60fps for smooth waveform updates
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self else { return }
-                let level = audioService.currentLevel
-                self.waveformModel.addLevel(level)
+                guard let self, let service = self.audioServiceRef else { return }
+                self.waveformModel.addLevel(service.currentLevel)
             }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        self.levelTimer = timer
     }
+
+    private var levelTimer: Timer?
 
     func hide() {
         levelTimer?.invalidate()
@@ -56,6 +62,7 @@ final class OverlayWindow {
         panel?.close()
         panel = nil
         waveformModel.reset()
+        audioServiceRef = nil
     }
 
     var isVisible: Bool {
@@ -68,10 +75,14 @@ final class OverlayWindow {
 @MainActor
 final class WaveformModel: ObservableObject {
     @Published var levels: [Float] = []
-    private let maxBars = 60
+    private let maxBars = 80
+    private var smoothedLevel: Float = 0
 
-    func addLevel(_ level: Float) {
-        levels.append(level)
+    func addLevel(_ rawLevel: Float) {
+        // Exponential smoothing for fluid motion
+        let smoothing: Float = 0.3
+        smoothedLevel = smoothedLevel * (1 - smoothing) + rawLevel * smoothing
+        levels.append(smoothedLevel)
         if levels.count > maxBars {
             levels.removeFirst(levels.count - maxBars)
         }
@@ -79,6 +90,7 @@ final class WaveformModel: ObservableObject {
 
     func reset() {
         levels = []
+        smoothedLevel = 0
     }
 }
 
@@ -89,20 +101,15 @@ struct OverlayContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Waveform area
             WaveformView(levels: model.levels)
                 .frame(maxWidth: .infinity)
                 .frame(height: 100)
                 .padding(.horizontal, 16)
                 .padding(.top, 12)
 
-            // Bottom bar
             HStack {
-                // Recording indicator
                 HStack(spacing: 6) {
-                    Circle()
-                        .fill(Color.red)
-                        .frame(width: 8, height: 8)
+                    PulsingDot()
                     Text("Recording")
                         .font(.system(size: 13, weight: .medium))
                         .foregroundColor(.white)
@@ -110,12 +117,11 @@ struct OverlayContentView: View {
 
                 Spacer()
 
-                // Stop shortcut hint
                 HStack(spacing: 4) {
                     Text("Stop")
                         .font(.system(size: 12))
                         .foregroundColor(.white.opacity(0.7))
-                    Text("⇧⌘R")
+                    Text("\u{21e7}\u{2318}R")
                         .font(.system(size: 11, weight: .medium, design: .rounded))
                         .foregroundColor(.white.opacity(0.9))
                         .padding(.horizontal, 6)
@@ -129,15 +135,34 @@ struct OverlayContentView: View {
         }
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill(Color.black.opacity(0.85))
+                .fill(.ultraThinMaterial)
+                .environment(\.colorScheme, .dark)
         )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.black.opacity(0.5))
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+struct PulsingDot: View {
+    @State private var isPulsing = false
+
+    var body: some View {
+        Circle()
+            .fill(Color.red)
+            .frame(width: 8, height: 8)
+            .opacity(isPulsing ? 0.4 : 1.0)
+            .animation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true), value: isPulsing)
+            .onAppear { isPulsing = true }
     }
 }
 
 struct WaveformView: View {
     let levels: [Float]
-    private let barWidth: CGFloat = 3
-    private let barSpacing: CGFloat = 2
+    private let barWidth: CGFloat = 2.5
+    private let barSpacing: CGFloat = 1.5
 
     var body: some View {
         GeometryReader { geo in
@@ -145,27 +170,31 @@ struct WaveformView: View {
             let displayLevels = paddedLevels(count: maxBars)
             let midY = geo.size.height / 2
 
-            Canvas { context, size in
+            Canvas { context, _ in
                 for (i, level) in displayLevels.enumerated() {
-                    let barHeight = max(2, CGFloat(level) * midY * 2)
+                    // Mirror waveform: bars grow symmetrically from center
+                    let barHeight = max(1.5, CGFloat(level) * midY * 1.8)
                     let x = CGFloat(i) * (barWidth + barSpacing)
                     let y = midY - barHeight / 2
 
                     let rect = CGRect(x: x, y: y, width: barWidth, height: barHeight)
-                    let path = RoundedRectangle(cornerRadius: 1.5).path(in: rect)
+                    let path = Capsule().path(in: rect)
 
-                    let opacity = Double(max(0.3, min(1.0, level * 3 + 0.3)))
-                    context.fill(path, with: .color(.white.opacity(opacity)))
+                    // Gradient opacity: newer bars (right) are brighter
+                    let age = Float(i) / Float(max(1, maxBars - 1))
+                    let baseOpacity = Double(age * 0.6 + 0.2)
+                    let levelOpacity = Double(min(1.0, level * 2 + 0.3))
+                    context.fill(path, with: .color(.white.opacity(min(1.0, baseOpacity * levelOpacity + 0.15))))
                 }
             }
         }
+        .animation(.linear(duration: 1.0 / 60.0), value: levels.count)
     }
 
     private func paddedLevels(count: Int) -> [Float] {
         if levels.count >= count {
             return Array(levels.suffix(count))
         }
-        let padding = [Float](repeating: 0, count: count - levels.count)
-        return padding + levels
+        return [Float](repeating: 0, count: count - levels.count) + levels
     }
 }
