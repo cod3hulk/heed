@@ -5,8 +5,12 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private let stateMachine = RecorderStateMachine()
+    private let audioCaptureService = AudioCaptureService()
+    private let transcriptionService = TranscriptionService()
     private var overlayWindow: OverlayWindow!
+    private let settingsController = SettingsWindowController()
     private var recordingMenuItem: NSMenuItem!
+    private var currentTranscript: String = ""
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusItem()
@@ -29,7 +33,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
-        let settingsItem = NSMenuItem(title: "Settings...", action: nil, keyEquivalent: ",")
+        let settingsItem = NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ",")
+        settingsItem.target = self
         menu.addItem(settingsItem)
 
         menu.addItem(NSMenuItem.separator())
@@ -43,9 +48,71 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func toggleRecording() {
+        if stateMachine.state == .idle {
+            startRecording()
+        } else if stateMachine.state.isRecording {
+            stopRecording()
+        }
+    }
+
+    private func startRecording() {
         stateMachine.toggleRecording()
         updateMenuState()
         updateOverlayVisibility()
+
+        Task {
+            do {
+                try await audioCaptureService.startCapture()
+            } catch {
+                stateMachine.fail(message: "Failed to start capture: \(error)")
+                updateOverlayVisibility()
+            }
+        }
+    }
+
+    private func stopRecording() {
+        stateMachine.toggleRecording()
+        updateMenuState()
+        updateOverlayVisibility()
+
+        Task {
+            let buffers = await audioCaptureService.stopCapture()
+
+            do {
+                let transcript = try await transcriptionService.transcribe(buffers: buffers)
+                currentTranscript = transcript
+                stateMachine.transcriptionComplete(text: transcript)
+                updateOverlayVisibility()
+            } catch {
+                stateMachine.fail(message: "Transcription failed: \(error)")
+                updateOverlayVisibility()
+            }
+        }
+    }
+
+    func handleAction(_ action: PostTranscriptionAction) {
+        stateMachine.selectAction(action)
+        updateOverlayVisibility()
+
+        let config = ConfigManager.shared
+        let provider = config.createProvider()
+        let prompt = config.prompt(for: action)
+        let transcript = currentTranscript
+
+        Task {
+            do {
+                let result = try await provider.process(transcript: transcript, prompt: prompt)
+                stateMachine.processingComplete(result: result)
+                updateOverlayVisibility()
+            } catch {
+                stateMachine.fail(message: "LLM processing failed: \(error)")
+                updateOverlayVisibility()
+            }
+        }
+    }
+
+    @objc private func openSettings() {
+        settingsController.show()
     }
 
     private func updateMenuState() {
