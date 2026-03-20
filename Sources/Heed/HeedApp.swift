@@ -6,6 +6,7 @@ import AVFoundation
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private let audioService = AudioCaptureService()
+    private let shortcutManager = GlobalShortcutManager()
     private var recordingMenuItem: NSMenuItem!
 
     static func main() {
@@ -18,6 +19,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusItem()
         requestPermissionsUpfront()
+        setupGlobalShortcut()
+    }
+
+    private func setupGlobalShortcut() {
+        shortcutManager.onToggleRecording = { [weak self] in
+            self?.toggleRecording()
+        }
+        shortcutManager.start()
     }
 
     private func setupStatusItem() {
