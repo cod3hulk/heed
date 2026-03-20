@@ -20,5 +20,7 @@
     <true/>
     <key>NSMicrophoneUsageDescription</key>
     <string>Heed needs microphone access to record meeting audio.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Heed needs screen recording access to capture system audio.</string>
 </dict>
 </plist>
