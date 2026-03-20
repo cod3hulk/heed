@@ -1,11 +1,13 @@
 import AppKit
 import AVFoundation
+import ScreenCaptureKit
 
 @main
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private let audioService = AudioCaptureService()
+    private let systemAudio = SystemAudioCapture()
     private let shortcutManager = GlobalShortcutManager()
     private let overlay = OverlayWindow()
     private var recordingMenuItem: NSMenuItem!
@@ -78,6 +80,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         @unknown default:
             break
         }
+
+        // Warm up ScreenCaptureKit permission — triggers the system consent dialog
+        // if not yet granted, so the user sees it at launch rather than mid-recording.
+        Task {
+            do {
+                _ = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+                print("Screen capture permission granted")
+            } catch {
+                print("Screen capture permission not available: \(error)")
+            }
+        }
     }
 
     private func saveWAV(samples: [Float], sampleRate: Int, to url: URL) {
@@ -118,16 +131,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleRecording() {
         if audioService.isRecording {
             overlay.hide()
-            let samples = audioService.stopRecording()
+            let micSamples = audioService.stopRecording()
             recordingMenuItem.title = "Start Recording"
 
             guard ModelManager.shared.isReady else {
                 print("Model not ready — skipping transcription")
+                Task { await systemAudio.stopCapture() }
                 return
             }
+
             Task {
-                print("Transcribing \(String(format: "%.1f", Double(samples.count) / 16000))s of audio...")
-                if let transcript = await ModelManager.shared.transcribe(samples) {
+                let sysSamples16k = await stopAndResampleSystemAudio()
+                let mixed = mixAudio(mic: micSamples, system: sysSamples16k)
+                print("Transcribing \(String(format: "%.1f", Double(mixed.count) / 16000))s of audio (mic + system)...")
+                if let transcript = await ModelManager.shared.transcribe(mixed) {
                     print("Transcript: \(transcript)")
                     // TODO: surface in overlay / post-processing UI
                 }
@@ -135,11 +152,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             do {
                 try audioService.startRecording()
+                Task {
+                    do {
+                        try await systemAudio.startCapture()
+                    } catch {
+                        print("System audio capture unavailable: \(error) — mic only")
+                    }
+                }
                 overlay.show(audioService: audioService)
                 recordingMenuItem.title = "Stop Recording"
             } catch {
                 print("Failed to start recording: \(error)")
             }
         }
+    }
+
+    private func stopAndResampleSystemAudio() async -> [Float] {
+        let raw = await systemAudio.stopCapture()
+        guard !raw.isEmpty else { return [] }
+        return resampleTo16k(raw, fromRate: systemAudio.nativeSampleRate)
+    }
+
+    /// Simple linear interpolation resampler — mirrors AudioCaptureService's approach.
+    private func resampleTo16k(_ samples: [Float], fromRate: Double) -> [Float] {
+        let targetRate = 16000.0
+        if abs(fromRate - targetRate) < 1.0 { return samples }
+        let ratio = fromRate / targetRate
+        let outputCount = Int(Double(samples.count) / ratio)
+        guard outputCount > 0 else { return [] }
+        var output = [Float](repeating: 0, count: outputCount)
+        for i in 0..<outputCount {
+            let srcIndex = Double(i) * ratio
+            let idx = Int(srcIndex)
+            let frac = Float(srcIndex - Double(idx))
+            if idx + 1 < samples.count {
+                output[i] = samples[idx] * (1.0 - frac) + samples[idx + 1] * frac
+            } else if idx < samples.count {
+                output[i] = samples[idx]
+            }
+        }
+        return output
+    }
+
+    /// Mix mic and system audio by averaging, aligned to the shorter of the two.
+    /// Falls back to mic-only if system audio is empty.
+    private func mixAudio(mic: [Float], system: [Float]) -> [Float] {
+        guard !system.isEmpty else {
+            print("No system audio — using mic only")
+            return mic
+        }
+        let count = min(mic.count, system.count)
+        var mixed = [Float](repeating: 0, count: count)
+        for i in 0..<count {
+            let s = mic[i] * 0.6 + system[i] * 0.4
+            mixed[i] = max(-1.0, min(1.0, s))
+        }
+        // Append remainder from the longer source
+        if mic.count > count {
+            mixed.append(contentsOf: mic[count...])
+        } else if system.count > count {
+            mixed.append(contentsOf: system[count...])
+        }
+        print("Mixed \(String(format: "%.1f", Double(mic.count) / 16000))s mic + \(String(format: "%.1f", Double(system.count) / 16000))s system → \(String(format: "%.1f", Double(mixed.count) / 16000))s")
+        return mixed
     }
 }
