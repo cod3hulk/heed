@@ -35,7 +35,7 @@ final class OverlayWindow: NSPanel {
 }
 
 struct OverlayContentView: View {
-    let stateMachine: RecorderStateMachine
+    @Bindable var stateMachine: RecorderStateMachine
 
     var body: some View {
         HStack(spacing: 8) {
