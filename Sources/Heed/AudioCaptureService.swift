@@ -44,6 +44,43 @@ private final class AudioSampleCollector: @unchecked Sendable {
     }
 }
 
+/// Resample any audio buffer to 16kHz mono Float32 — free function, no actor isolation
+private func resampleTo16kMono(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+    let targetFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
+
+    if buffer.format.sampleRate == targetFormat.sampleRate && buffer.format.channelCount == targetFormat.channelCount {
+        return buffer
+    }
+    guard let converter = AVAudioConverter(from: buffer.format, to: targetFormat) else {
+        return nil
+    }
+
+    let capacity = AVAudioFrameCount(
+        Double(buffer.frameLength) * (targetFormat.sampleRate / buffer.format.sampleRate)
+    )
+    guard capacity > 0, let outputBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else {
+        return nil
+    }
+
+    var error: NSError?
+    let inputBuffer = buffer
+    nonisolated(unsafe) var consumed = false
+    converter.convert(to: outputBuffer, error: &error) { _, outStatus in
+        if consumed {
+            outStatus.pointee = .noDataNow
+            return nil
+        }
+        consumed = true
+        outStatus.pointee = .haveData
+        return inputBuffer
+    }
+
+    if error != nil {
+        return nil
+    }
+    return outputBuffer
+}
+
 @MainActor
 final class AudioCaptureService {
     private var systemAudioStream: SCStream?
@@ -134,7 +171,7 @@ final class AudioCaptureService {
         let collector = systemCollector
         let delegate = SystemAudioDelegate { sampleBuffer in
             guard let pcmBuffer = sampleBuffer.asPCMBuffer() else { return }
-            if let resampled = AudioCaptureService.resample(pcmBuffer) {
+            if let resampled = resampleTo16kMono(pcmBuffer) {
                 collector.append(resampled)
             }
         }
@@ -163,7 +200,7 @@ final class AudioCaptureService {
         let collector = micCollector
 
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, _ in
-            if let resampled = AudioCaptureService.resample(buffer) {
+            if let resampled = resampleTo16kMono(buffer) {
                 collector.append(resampled, updateLevel: true)
             }
         }
@@ -178,45 +215,6 @@ final class AudioCaptureService {
         micEngine?.stop()
         micEngine = nil
     }
-
-    // MARK: - Resampling (any format → 16kHz mono)
-
-    private nonisolated static func resample(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
-        let targetFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
-
-        guard buffer.format.sampleRate != targetFormat.sampleRate || buffer.format.channelCount != targetFormat.channelCount else {
-            return buffer
-        }
-        guard let converter = AVAudioConverter(from: buffer.format, to: targetFormat) else {
-            return nil
-        }
-
-        let capacity = AVAudioFrameCount(
-            Double(buffer.frameLength) * (targetFormat.sampleRate / buffer.format.sampleRate)
-        )
-        guard capacity > 0, let outputBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else {
-            return nil
-        }
-
-        var error: NSError?
-        let inputBuffer = buffer
-        nonisolated(unsafe) var consumed = false
-        converter.convert(to: outputBuffer, error: &error) { _, outStatus in
-            if consumed {
-                outStatus.pointee = .noDataNow
-                return nil
-            }
-            consumed = true
-            outStatus.pointee = .haveData
-            return inputBuffer
-        }
-
-        if error != nil {
-            return nil
-        }
-        return outputBuffer
-    }
-
 }
 
 // MARK: - SCStream Audio Output Delegate

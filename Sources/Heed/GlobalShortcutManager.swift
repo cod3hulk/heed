@@ -28,15 +28,15 @@ final class GlobalShortcutManager {
         runLoopSource = nil
     }
 
-    private func requestAccessibilityIfNeeded() {
-        let options = ["AXTrustedCheckOptionPrompt" as CFString: true] as CFDictionary
-        if !AXIsProcessTrustedWithOptions(options) {
-            print("Accessibility permission not yet granted. Global shortcuts will be unavailable until approved.")
-        }
-    }
-
     private func setupEventTap() {
-        requestAccessibilityIfNeeded()
+        // Check accessibility without prompting first
+        if !AXIsProcessTrusted() {
+            // Only prompt if not already trusted
+            let options = ["AXTrustedCheckOptionPrompt" as CFString: true] as CFDictionary
+            _ = AXIsProcessTrustedWithOptions(options)
+            print("Accessibility permission not yet granted. Global shortcuts will be unavailable until approved.")
+            return
+        }
 
         let mask: CGEventMask = (1 << CGEventType.keyDown.rawValue)
 
