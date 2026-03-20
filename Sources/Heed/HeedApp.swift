@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private let audioService = AudioCaptureService()
     private let shortcutManager = GlobalShortcutManager()
+    private let overlay = OverlayWindow()
     private var recordingMenuItem: NSMenuItem!
 
     static func main() {
@@ -103,6 +104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleRecording() {
         if audioService.isRecording {
+            overlay.hide()
             let samples = audioService.stopRecording()
             let duration = Double(samples.count) / 16000.0
             print("Captured \(samples.count) samples (\(String(format: "%.1f", duration))s of audio)")
@@ -117,6 +119,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             do {
                 try audioService.startRecording()
+                overlay.show(audioService: audioService)
                 recordingMenuItem.title = "Stop Recording"
             } catch {
                 print("Failed to start recording: \(error)")
