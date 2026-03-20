@@ -19,7 +19,10 @@ struct OllamaProvider: LLMProvider {
             "stream": false
         ]
 
-        var request = URLRequest(url: endpoint.appendingPathComponent("/api/generate"))
+        let apiURL = URL(string: "/api/generate", relativeTo: endpoint)?.absoluteURL
+            ?? endpoint.appendingPathComponent("api/generate")
+
+        var request = URLRequest(url: apiURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
@@ -44,8 +47,8 @@ struct OllamaProvider: LLMProvider {
 
 struct ClaudeCLIProvider: LLMProvider {
     func process(transcript: String, prompt: String) async throws -> String {
-        let fullPrompt = "\(prompt)\n\nTranscript:\n\(transcript)"
-        return try await runCLI(command: "claude", arguments: ["-p", fullPrompt])
+        let input = "\(prompt)\n\nTranscript:\n\(transcript)"
+        return try await runCLI(command: "claude", arguments: ["-p", "-"], stdin: input)
     }
 }
 
@@ -53,22 +56,24 @@ struct ClaudeCLIProvider: LLMProvider {
 
 struct GeminiCLIProvider: LLMProvider {
     func process(transcript: String, prompt: String) async throws -> String {
-        let fullPrompt = "\(prompt)\n\nTranscript:\n\(transcript)"
-        return try await runCLI(command: "gemini", arguments: ["-p", fullPrompt])
+        let input = "\(prompt)\n\nTranscript:\n\(transcript)"
+        return try await runCLI(command: "gemini", arguments: ["-p", "-"], stdin: input)
     }
 }
 
 // MARK: - CLI Helper
 
-private func runCLI(command: String, arguments: [String]) async throws -> String {
+private func runCLI(command: String, arguments: [String], stdin input: String) async throws -> String {
     try await withCheckedThrowingContinuation { continuation in
         let process = Process()
-        let pipe = Pipe()
+        let outputPipe = Pipe()
+        let inputPipe = Pipe()
 
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = [command] + arguments
-        process.standardOutput = pipe
-        process.standardError = pipe
+        process.standardOutput = outputPipe
+        process.standardError = outputPipe
+        process.standardInput = inputPipe
 
         do {
             try process.run()
@@ -77,9 +82,15 @@ private func runCLI(command: String, arguments: [String]) async throws -> String
             return
         }
 
+        // Write transcript to stdin
+        if let data = input.data(using: .utf8) {
+            inputPipe.fileHandleForWriting.write(data)
+        }
+        inputPipe.fileHandleForWriting.closeFile()
+
         process.waitUntilExit()
 
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
         let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
         if process.terminationStatus != 0 {

@@ -67,6 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try await audioCaptureService.startCapture()
             } catch {
                 stateMachine.fail(message: "Failed to start capture: \(error)")
+                updateMenuState()
                 updateOverlayVisibility()
             }
         }
@@ -87,6 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 updateOverlayVisibility()
             } catch {
                 stateMachine.fail(message: "Transcription failed: \(error)")
+                updateMenuState()
                 updateOverlayVisibility()
             }
         }
@@ -108,6 +110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 updateOverlayVisibility()
             } catch {
                 stateMachine.fail(message: "LLM processing failed: \(error)")
+                updateMenuState()
                 updateOverlayVisibility()
             }
         }
