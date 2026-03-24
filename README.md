@@ -10,6 +10,13 @@ A macOS menubar app that records meetings, transcribes locally via [Parakeet TDT
 - **Global shortcut** — `⇧⌘R` starts and stops recording from any app
 - **Animated overlay** — floating waveform panel shows recording status
 
+### Coming Soon
+
+- **Post-transcription actions** — `⌘1` Summarize / `⌘2` Meeting Feedback via your configured LLM
+- **LLM providers** — Ollama (local), Claude CLI, or Gemini CLI; user-configurable
+- **Settings window** — customize LLM provider, prompts, and shortcuts
+- **State machine UI** — overlay guides you from recording → transcribing → action selection → result
+
 ## Requirements
 
 - macOS 15 (Sequoia) or later
