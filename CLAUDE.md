@@ -18,7 +18,7 @@ Heed is a macOS menubar-only app (LSUIElement=true) that records meetings, trans
 
 **Key constraint — Swift 6 concurrency:** Package.swift uses `.swiftLanguageMode(.v5)` because AVAudioEngine's `installTap` callback runs on a realtime audio thread and Swift 6 runtime traps on actor isolation boundary crossings. The tap closure must ONLY use raw C pointers (`floatChannelData`) and value types — no `[weak self]` capturing `@MainActor` classes, no `AVAudioPCMBuffer` passed to functions, no static methods on `@MainActor` types.
 
-**Audio pipeline:** `AudioCaptureService` captures mic via AVAudioEngine at native sample rate (typically 48kHz), mixes to mono in the tap callback, collects samples in a thread-safe `AudioSampleCollector` (uses `OSAllocatedUnfairLock`), then resamples to 16kHz on the main thread after recording stops.
+**Audio pipeline:** `AudioCaptureService` captures mic via AVAudioEngine at native sample rate (typically 48kHz), mixes to mono in the tap callback, collects samples in a thread-safe `AudioSampleCollector` (uses `OSAllocatedUnfairLock`), then resamples to 16kHz on the main thread after recording stops. `SystemAudioCapture` captures system audio via ScreenCaptureKit (`SCStream`, `capturesAudio = true`, `excludesCurrentProcessAudio = true`). Both streams are resampled to 16kHz and mixed (60% mic / 40% system) before transcription.
 
 **Global shortcuts:** `GlobalShortcutManager` uses Carbon `RegisterEventHotKey` (not NSEvent monitors, which require Input Monitoring permission on modern macOS).
 
@@ -30,4 +30,4 @@ macOS kills the app process when granting new permissions (mic, screen recording
 
 ## Project Spec
 
-Full requirements are in `PROJECT_BRIEF.md`. Remaining unimplemented: system audio capture (ScreenCaptureKit), transcription (Core ML Parakeet), LLM integration (Ollama/Claude CLI/Gemini CLI), state machine, settings window, config persistence.
+Full requirements are in `PROJECT_BRIEF.md`. Remaining unimplemented: state machine, LLM integration (Ollama/Claude CLI/Gemini CLI), settings window, config persistence, post-transcription action UI (⌘1 Summarize / ⌘2 Meeting Feedback).
