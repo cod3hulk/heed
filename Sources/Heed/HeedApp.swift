@@ -12,6 +12,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let overlay = OverlayWindow()
     private var recordingMenuItem: NSMenuItem!
 
+    private enum AppPhase { case idle, recording, transcribing, done }
+    private var appPhase: AppPhase = .idle
+
     static func main() {
         let app = NSApplication.shared
         let delegate = AppDelegate()
@@ -129,52 +132,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func toggleRecording() {
-        if audioService.isRecording {
+        switch appPhase {
+        case .idle:
+            startRecording()
+        case .recording:
+            stopRecordingAndTranscribe()
+        case .transcribing:
+            break // ignore presses during transcription
+        case .done:
             overlay.hide()
-            let micSamples = audioService.stopRecording()
+            appPhase = .idle
             recordingMenuItem.title = "Start Recording"
+        }
+    }
+
+    private func startRecording() {
+        do {
+            try audioService.startRecording()
+            Task {
+                do {
+                    try await systemAudio.startCapture()
+                } catch {
+                    print("System audio capture unavailable: \(error) — mic only")
+                }
+            }
+            overlay.show(audioService: audioService)
+            recordingMenuItem.title = "Stop Recording"
+            appPhase = .recording
+        } catch {
+            print("Failed to start recording: \(error)")
+        }
+    }
+
+    private func stopRecordingAndTranscribe() {
+        let micSamples = audioService.stopRecording()
+        appPhase = .transcribing
+        recordingMenuItem.title = "Transcribing…"
+        overlay.transitionTo(.transcribing)
+
+        Task {
+            let sysSamples16k = await stopAndResampleSystemAudio()
+            let mixed = mixAudio(mic: micSamples, system: sysSamples16k)
+
+            let supportDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("Heed")
+            try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+            let wavURL = supportDir.appendingPathComponent("recording_\(formatter.string(from: Date())).wav")
+            saveWAV(samples: mixed, sampleRate: 16000, to: wavURL)
+            print("Saved recording to \(wavURL.path)")
 
             guard ModelManager.shared.isReady else {
                 print("Model not ready — skipping transcription")
-                Task { await systemAudio.stopCapture() }
+                overlay.hide()
+                appPhase = .idle
+                recordingMenuItem.title = "Start Recording"
                 return
             }
 
-            Task {
-                let sysSamples16k = await stopAndResampleSystemAudio()
-                let mixed = mixAudio(mic: micSamples, system: sysSamples16k)
+            print("Transcribing \(String(format: "%.1f", Double(mixed.count) / 16000))s of audio…")
+            let transcript = await ModelManager.shared.transcribe(mixed) ?? ""
+            print("Transcript: \(transcript)")
 
-                let supportDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-                    .appendingPathComponent("Heed")
-                try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
-                let formatter = DateFormatter()
-                formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-                let filename = "recording_\(formatter.string(from: Date())).wav"
-                let wavURL = supportDir.appendingPathComponent(filename)
-                saveWAV(samples: mixed, sampleRate: 16000, to: wavURL)
-                print("Saved recording to \(wavURL.path)")
-
-                print("Transcribing \(String(format: "%.1f", Double(mixed.count) / 16000))s of audio (mic + system)...")
-                if let transcript = await ModelManager.shared.transcribe(mixed) {
-                    print("Transcript: \(transcript)")
-                    // TODO: surface in overlay / post-processing UI
-                }
-            }
-        } else {
-            do {
-                try audioService.startRecording()
-                Task {
-                    do {
-                        try await systemAudio.startCapture()
-                    } catch {
-                        print("System audio capture unavailable: \(error) — mic only")
-                    }
-                }
-                overlay.show(audioService: audioService)
-                recordingMenuItem.title = "Stop Recording"
-            } catch {
-                print("Failed to start recording: \(error)")
-            }
+            overlay.transitionTo(.done(transcript.isEmpty ? "(no speech detected)" : transcript))
+            appPhase = .done
+            recordingMenuItem.title = "Start Recording"
         }
     }
 

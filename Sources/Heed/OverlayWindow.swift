@@ -1,6 +1,12 @@
 import AppKit
 import SwiftUI
 
+enum OverlayPhase {
+    case recording
+    case transcribing
+    case done(String)
+}
+
 @MainActor
 final class OverlayWindow {
     private var panel: NSPanel?
@@ -11,37 +17,9 @@ final class OverlayWindow {
     func show(audioService: AudioCaptureService) {
         guard panel == nil else { return }
         audioServiceRef = audioService
+        waveformModel.phase = .recording
 
-        let contentView = NSHostingView(rootView: OverlayContentView(model: waveformModel))
-        contentView.frame = NSRect(x: 0, y: 0, width: 480, height: 160)
-
-        let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 480, height: 160),
-            styleMask: [.nonactivatingPanel, .fullSizeContentView],
-            backing: .buffered,
-            defer: false
-        )
-        panel.isReleasedWhenClosed = false  // Required under ARC — prevents autorelease double-free
-        panel.isFloatingPanel = true
-        panel.level = .floating
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.hasShadow = true
-        panel.contentView = contentView
-        panel.isMovableByWindowBackground = true
-        panel.hidesOnDeactivate = false
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.alphaValue = 0.92
-
-        if let screen = NSScreen.main {
-            let screenFrame = screen.visibleFrame
-            let x = screenFrame.midX - 240
-            let y = screenFrame.minY + 60
-            panel.setFrameOrigin(NSPoint(x: x, y: y))
-        }
-
-        panel.orderFrontRegardless()
-        self.panel = panel
+        makePanel(height: 160)
 
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
@@ -53,6 +31,20 @@ final class OverlayWindow {
         self.levelTimer = timer
     }
 
+    func transitionTo(_ phase: OverlayPhase) {
+        levelTimer?.invalidate()
+        levelTimer = nil
+        audioServiceRef = nil
+
+        if case .done = phase {
+            resizePanel(height: 260)
+        } else {
+            resizePanel(height: 160)
+        }
+
+        waveformModel.phase = phase
+    }
+
     func hide() {
         levelTimer?.invalidate()
         levelTimer = nil
@@ -62,8 +54,53 @@ final class OverlayWindow {
         audioServiceRef = nil
     }
 
-    var isVisible: Bool {
-        panel != nil
+    var isVisible: Bool { panel != nil }
+
+    // MARK: - Private
+
+    private func makePanel(height: CGFloat) {
+        let width: CGFloat = 480
+        let contentView = NSHostingView(rootView: OverlayContentView(model: waveformModel))
+        contentView.frame = NSRect(x: 0, y: 0, width: width, height: height)
+
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: width, height: height),
+            styleMask: [.nonactivatingPanel, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isReleasedWhenClosed = false
+        panel.isFloatingPanel = true
+        panel.level = .floating
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.contentView = contentView
+        panel.isMovableByWindowBackground = true
+        panel.hidesOnDeactivate = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.alphaValue = 0.92
+
+        positionPanel(panel, height: height)
+        panel.orderFrontRegardless()
+        self.panel = panel
+    }
+
+    private func resizePanel(height: CGFloat) {
+        guard let panel else { return }
+        let width: CGFloat = 480
+        panel.contentView?.frame = NSRect(x: 0, y: 0, width: width, height: height)
+        positionPanel(panel, height: height)
+        panel.setContentSize(NSSize(width: width, height: height))
+    }
+
+    private func positionPanel(_ panel: NSPanel, height: CGFloat) {
+        if let screen = NSScreen.main {
+            let screenFrame = screen.visibleFrame
+            let x = screenFrame.midX - 240
+            let y = screenFrame.minY + 60
+            panel.setFrameOrigin(NSPoint(x: x, y: y))
+        }
     }
 }
 
@@ -73,31 +110,25 @@ final class OverlayWindow {
 final class WaveformModel: ObservableObject {
     static let barCount = 112
     @Published var barHeights: [Float] = Array(repeating: 0, count: WaveformModel.barCount)
-    private var phase: Double = 0
+    @Published var phase: OverlayPhase = .recording
+    private var animPhase: Double = 0
     private var smoothedLevel: Float = 0
 
     func updateLevel(_ rawLevel: Float) {
-        // Smooth the input level
         let attack: Float = rawLevel > smoothedLevel ? 0.5 : 0.1
         smoothedLevel = smoothedLevel + attack * (rawLevel - smoothedLevel)
 
-        phase += 0.08
+        animPhase += 0.08
 
         let count = WaveformModel.barCount
         for i in 0..<count {
             let pos = Float(i) / Float(count - 1)
-
-            // Multiple sine waves at different frequencies create organic variation
-            let wave1 = sin(Double(pos) * 4.0 * .pi + phase)
-            let wave2 = sin(Double(pos) * 7.0 * .pi + phase * 1.3) * 0.5
-            let wave3 = sin(Double(pos) * 11.0 * .pi + phase * 0.7) * 0.3
-            let combined = Float(wave1 + wave2 + wave3) / 1.8 // normalize to ~[-1, 1]
-
-            // Map combined wave to a bar height, scaled by audio level
+            let wave1 = sin(Double(pos) * 4.0 * .pi + animPhase)
+            let wave2 = sin(Double(pos) * 7.0 * .pi + animPhase * 1.3) * 0.5
+            let wave3 = sin(Double(pos) * 11.0 * .pi + animPhase * 0.7) * 0.3
+            let combined = Float(wave1 + wave2 + wave3) / 1.8
             let envelope = 0.15 + abs(combined) * 0.85
             let target = smoothedLevel * envelope
-
-            // Smooth each bar individually for fluid motion
             let barAttack: Float = target > barHeights[i] ? 0.3 : 0.08
             barHeights[i] = barHeights[i] + barAttack * (target - barHeights[i])
         }
@@ -106,13 +137,41 @@ final class WaveformModel: ObservableObject {
     func reset() {
         barHeights = Array(repeating: 0, count: WaveformModel.barCount)
         smoothedLevel = 0
-        phase = 0
+        animPhase = 0
+        phase = .recording
     }
 }
 
 // MARK: - SwiftUI Views
 
 struct OverlayContentView: View {
+    @ObservedObject var model: WaveformModel
+
+    var body: some View {
+        Group {
+            switch model.phase {
+            case .recording:
+                RecordingView(model: model)
+            case .transcribing:
+                TranscribingView()
+            case .done(let text):
+                TranscriptView(text: text)
+            }
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(.ultraThinMaterial)
+                .environment(\.colorScheme, .dark)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.black.opacity(0.5))
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+struct RecordingView: View {
     @ObservedObject var model: WaveformModel
 
     var body: some View {
@@ -130,9 +189,7 @@ struct OverlayContentView: View {
                         .font(.system(size: 13, weight: .medium))
                         .foregroundColor(.white)
                 }
-
                 Spacer()
-
                 HStack(spacing: 4) {
                     Text("Stop")
                         .font(.system(size: 12))
@@ -149,16 +206,61 @@ struct OverlayContentView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
         }
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(.ultraThinMaterial)
-                .environment(\.colorScheme, .dark)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(Color.black.opacity(0.5))
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+struct TranscribingView: View {
+    var body: some View {
+        VStack(spacing: 14) {
+            ProgressView()
+                .progressViewStyle(.circular)
+                .controlSize(.large)
+                .tint(.white)
+            Text("Transcribing…")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundColor(.white)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+struct TranscriptView: View {
+    let text: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ScrollView {
+                Text(text)
+                    .font(.system(size: 13))
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(16)
+            }
+            .frame(maxHeight: .infinity)
+
+            Divider().background(Color.white.opacity(0.15))
+
+            HStack {
+                Text("Transcript")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.white.opacity(0.6))
+                Spacer()
+                HStack(spacing: 4) {
+                    Text("Dismiss")
+                        .font(.system(size: 12))
+                        .foregroundColor(.white.opacity(0.7))
+                    Text("\u{21e7}\u{2318}R")
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundColor(.white.opacity(0.9))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.white.opacity(0.15))
+                        .cornerRadius(4)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+        }
     }
 }
 
