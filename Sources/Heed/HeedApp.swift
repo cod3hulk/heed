@@ -26,6 +26,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusItem()
         requestPermissionsUpfront()
         setupGlobalShortcut()
+        overlay.onDismiss = { [weak self] in
+            self?.appPhase = .idle
+            self?.recordingMenuItem.title = "Start Recording"
+        }
         // Defer past applicationDidFinishLaunching — runModal() inside this
         // delegate method crashes AppKit's autorelease pool later.
         DispatchQueue.main.async { self.checkModelAvailability() }

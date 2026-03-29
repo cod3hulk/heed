@@ -13,6 +13,11 @@ final class OverlayWindow {
     private let waveformModel = WaveformModel()
     private weak var audioServiceRef: AudioCaptureService?
     private var levelTimer: Timer?
+    private var keyMonitor: Any?
+    private var pendingTranscript: String = ""
+
+    /// Called when ESC or Return is pressed in the done state.
+    var onDismiss: (() -> Void)?
 
     func show(audioService: AudioCaptureService) {
         guard panel == nil else { return }
@@ -36,8 +41,13 @@ final class OverlayWindow {
         levelTimer = nil
         audioServiceRef = nil
 
-        if case .done = phase {
+        if case .done(let text) = phase {
+            pendingTranscript = text
             resizePanel(height: 260)
+            // Activate app so the panel can receive key events
+            NSApp.activate(ignoringOtherApps: true)
+            panel?.makeKeyAndOrderFront(nil)
+            installKeyMonitor()
         } else {
             resizePanel(height: 160)
         }
@@ -46,12 +56,43 @@ final class OverlayWindow {
     }
 
     func hide() {
+        removeKeyMonitor()
         levelTimer?.invalidate()
         levelTimer = nil
         panel?.close()
         panel = nil
         waveformModel.reset()
         audioServiceRef = nil
+        pendingTranscript = ""
+    }
+
+    // MARK: - Key handling
+
+    private func installKeyMonitor() {
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            switch event.keyCode {
+            case 53: // Escape — discard
+                self.hide()
+                self.onDismiss?()
+                return nil
+            case 36: // Return — copy transcript then discard
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(self.pendingTranscript, forType: .string)
+                self.hide()
+                self.onDismiss?()
+                return nil
+            default:
+                return event
+            }
+        }
+    }
+
+    private func removeKeyMonitor() {
+        if let monitor = keyMonitor {
+            NSEvent.removeMonitor(monitor)
+            keyMonitor = nil
+        }
     }
 
     var isVisible: Bool { panel != nil }
@@ -245,21 +286,33 @@ struct TranscriptView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(.white.opacity(0.6))
                 Spacer()
-                HStack(spacing: 4) {
-                    Text("Dismiss")
-                        .font(.system(size: 12))
-                        .foregroundColor(.white.opacity(0.7))
-                    Text("\u{21e7}\u{2318}R")
-                        .font(.system(size: 11, weight: .medium, design: .rounded))
-                        .foregroundColor(.white.opacity(0.9))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.white.opacity(0.15))
-                        .cornerRadius(4)
+                HStack(spacing: 8) {
+                    KeyHint(key: "⎋", label: "Discard")
+                    KeyHint(key: "↵", label: "Copy")
                 }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
+        }
+    }
+}
+
+struct KeyHint: View {
+    let key: String
+    let label: String
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(key)
+                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .foregroundColor(.white.opacity(0.9))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.white.opacity(0.15))
+                .cornerRadius(4)
+            Text(label)
+                .font(.system(size: 12))
+                .foregroundColor(.white.opacity(0.7))
         }
     }
 }
