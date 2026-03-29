@@ -7,11 +7,10 @@ final class ModelManager {
     static let shared = ModelManager()
 
     private(set) var asrManager: AsrManager?
+    private(set) var isReady: Bool = false
 
     // Held during download so the @Sendable progress handler can weakly reach it
     private weak var activeProgressModel: DownloadProgressModel?
-
-    var isReady: Bool { asrManager?.isAvailable ?? false }
 
     /// True if the Core ML model bundles are already on disk.
     var isModelCached: Bool {
@@ -32,6 +31,7 @@ final class ModelManager {
                     let mgr = AsrManager()
                     try await mgr.initialize(models: models)
                     self.asrManager = mgr
+                    self.isReady = true
                     completion(true)
                 } catch {
                     print("Failed to load cached model: \(error)")
@@ -44,7 +44,7 @@ final class ModelManager {
     }
 
     func transcribe(_ samples: [Float]) async -> String? {
-        guard let asrManager, asrManager.isAvailable else { return nil }
+        guard let asrManager, isReady else { return nil }
         do {
             let result = try await asrManager.transcribe(samples, source: .microphone)
             return result.text
@@ -91,6 +91,7 @@ final class ModelManager {
                 let mgr = AsrManager()
                 try await mgr.initialize(models: models)
                 self.asrManager = mgr
+                self.isReady = true
                 progressModel.status = "Download complete!"
                 progressModel.overallProgress = 1.0
                 try? await Task.sleep(nanoseconds: 500_000_000)

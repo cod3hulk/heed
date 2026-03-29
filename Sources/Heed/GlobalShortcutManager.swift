@@ -37,7 +37,7 @@ final class GlobalShortcutManager {
         )
 
         // Register Cmd+Shift+R as global hotkey
-        var hotKeyID = EventHotKeyID(
+        let hotKeyID = EventHotKeyID(
             signature: OSType(0x48454544), // "HEED"
             id: 1
         )
