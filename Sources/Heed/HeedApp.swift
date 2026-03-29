@@ -143,6 +143,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task {
                 let sysSamples16k = await stopAndResampleSystemAudio()
                 let mixed = mixAudio(mic: micSamples, system: sysSamples16k)
+
+                let supportDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                    .appendingPathComponent("Heed")
+                try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
+                let formatter = DateFormatter()
+                formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+                let filename = "recording_\(formatter.string(from: Date())).wav"
+                let wavURL = supportDir.appendingPathComponent(filename)
+                saveWAV(samples: mixed, sampleRate: 16000, to: wavURL)
+                print("Saved recording to \(wavURL.path)")
+
                 print("Transcribing \(String(format: "%.1f", Double(mixed.count) / 16000))s of audio (mic + system)...")
                 if let transcript = await ModelManager.shared.transcribe(mixed) {
                     print("Transcript: \(transcript)")
