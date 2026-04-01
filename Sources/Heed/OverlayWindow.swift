@@ -5,6 +5,7 @@ enum OverlayPhase {
     case recording
     case transcribing
     case done(String)
+    case summarizing
 }
 
 @MainActor
@@ -18,6 +19,8 @@ final class OverlayWindow {
 
     /// Called when ESC or Return is pressed in the done state.
     var onDismiss: (() -> Void)?
+    /// Called when ⌘1 is pressed in the done state to request summarization.
+    var onSummarize: (() -> Void)?
 
     func show(audioService: AudioCaptureService) {
         guard panel == nil else { return }
@@ -41,14 +44,18 @@ final class OverlayWindow {
         levelTimer = nil
         audioServiceRef = nil
 
-        if case .done(let text) = phase {
+        switch phase {
+        case .done(let text):
             pendingTranscript = text
             resizePanel(height: 260)
             // Activate app so the panel can receive key events
             NSApp.activate(ignoringOtherApps: true)
             panel?.makeKeyAndOrderFront(nil)
             installKeyMonitor()
-        } else {
+        case .summarizing:
+            removeKeyMonitor()
+            resizePanel(height: 160)
+        default:
             resizePanel(height: 160)
         }
 
@@ -82,6 +89,12 @@ final class OverlayWindow {
                 self.hide()
                 self.onDismiss?()
                 return nil
+            case 18: // 1 — ⌘1 to summarize
+                if event.modifierFlags.contains(.command) {
+                    self.onSummarize?()
+                    return nil
+                }
+                return event
             default:
                 return event
             }
@@ -197,6 +210,8 @@ struct OverlayContentView: View {
                 TranscribingView()
             case .done(let text):
                 TranscriptView(text: text)
+            case .summarizing:
+                SummarizingView()
             }
         }
         .background(
@@ -265,6 +280,21 @@ struct TranscribingView: View {
     }
 }
 
+struct SummarizingView: View {
+    var body: some View {
+        VStack(spacing: 14) {
+            ProgressView()
+                .progressViewStyle(.circular)
+                .controlSize(.large)
+                .tint(.white)
+            Text("Summarizing…")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundColor(.white)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
 struct TranscriptView: View {
     let text: String
 
@@ -289,6 +319,7 @@ struct TranscriptView: View {
                 HStack(spacing: 8) {
                     KeyHint(key: "⎋", label: "Discard")
                     KeyHint(key: "↵", label: "Copy")
+                    KeyHint(key: "⌘1", label: "Summarize")
                 }
             }
             .padding(.horizontal, 16)

@@ -12,8 +12,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let overlay = OverlayWindow()
     private var recordingMenuItem: NSMenuItem!
 
-    private enum AppPhase { case idle, recording, transcribing, done }
+    private enum AppPhase { case idle, recording, transcribing, done, summarizing }
     private var appPhase: AppPhase = .idle
+    private var pendingTranscript = ""
 
     static func main() {
         let app = NSApplication.shared
@@ -29,6 +30,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlay.onDismiss = { [weak self] in
             self?.appPhase = .idle
             self?.recordingMenuItem.title = "Start Recording"
+        }
+        overlay.onSummarize = { [weak self] in
+            self?.startSummarization()
         }
         // Defer past applicationDidFinishLaunching — runModal() inside this
         // delegate method crashes AppKit's autorelease pool later.
@@ -141,8 +145,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             startRecording()
         case .recording:
             stopRecordingAndTranscribe()
-        case .transcribing:
-            break // ignore presses during transcription
+        case .transcribing, .summarizing:
+            break // ignore presses while processing
         case .done:
             overlay.hide()
             appPhase = .idle
@@ -199,7 +203,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let transcript = await ModelManager.shared.transcribe(mixed) ?? ""
             print("Transcript: \(transcript)")
 
-            overlay.transitionTo(.done(transcript.isEmpty ? "(no speech detected)" : transcript))
+            let displayText = transcript.isEmpty ? "(no speech detected)" : transcript
+            pendingTranscript = transcript
+            overlay.transitionTo(.done(displayText))
             appPhase = .done
             recordingMenuItem.title = "Start Recording"
         }
@@ -230,6 +236,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         return output
+    }
+
+    private func startSummarization() {
+        guard appPhase == .done, !pendingTranscript.isEmpty else { return }
+        appPhase = .summarizing
+        recordingMenuItem.title = "Summarizing…"
+        overlay.transitionTo(.summarizing)
+
+        Task {
+            let prompt = "Summarize this meeting transcript concisely. List key discussion topics, decisions made, and action items. Be brief and use bullet points."
+            let summary = await runClaudeCLI(pendingTranscript, prompt: prompt)
+            let result = summary ?? "(summarization failed — is Claude CLI installed?)"
+            overlay.transitionTo(.done(result))
+            appPhase = .done
+            recordingMenuItem.title = "Start Recording"
+        }
+    }
+
+    private func runClaudeCLI(_ transcript: String, prompt: String) async -> String? {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                let candidatePaths = [
+                    "/usr/local/bin/claude",
+                    "/opt/homebrew/bin/claude",
+                    "/usr/bin/claude",
+                    (ProcessInfo.processInfo.environment["HOME"] ?? "") + "/.local/bin/claude"
+                ]
+                guard let claudePath = candidatePaths.first(where: { FileManager.default.fileExists(atPath: $0) }) else {
+                    print("Claude CLI not found in PATH candidates")
+                    continuation.resume(returning: nil)
+                    return
+                }
+
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: claudePath)
+                process.arguments = ["-p", prompt]
+
+                let inputPipe = Pipe()
+                let outputPipe = Pipe()
+                process.standardInput = inputPipe
+                process.standardOutput = outputPipe
+                process.standardError = Pipe() // suppress stderr
+
+                do {
+                    try process.run()
+                    inputPipe.fileHandleForWriting.write(transcript.data(using: .utf8) ?? Data())
+                    inputPipe.fileHandleForWriting.closeFile()
+                    process.waitUntilExit()
+
+                    let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
+                    let output = String(data: data, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    continuation.resume(returning: output?.isEmpty == false ? output : nil)
+                } catch {
+                    print("Failed to run Claude CLI: \(error)")
+                    continuation.resume(returning: nil)
+                }
+            }
+        }
     }
 
     /// Mix mic and system audio by averaging, aligned to the shorter of the two.
