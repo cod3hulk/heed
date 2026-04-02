@@ -21,6 +21,8 @@ final class OverlayWindow {
     var onDismiss: (() -> Void)?
     /// Called when ⌘1 is pressed in the done state to request summarization.
     var onSummarize: (() -> Void)?
+    /// Called when ⌘2 is pressed in the done state to request meeting feedback.
+    var onMeetingFeedback: (() -> Void)?
 
     func show(audioService: AudioCaptureService) {
         guard panel == nil else { return }
@@ -92,6 +94,12 @@ final class OverlayWindow {
             case 18: // 1 — ⌘1 to summarize
                 if event.modifierFlags.contains(.command) {
                     self.onSummarize?()
+                    return nil
+                }
+                return event
+            case 19: // 2 — ⌘2 for meeting feedback
+                if event.modifierFlags.contains(.command) {
+                    self.onMeetingFeedback?()
                     return nil
                 }
                 return event
@@ -320,6 +328,7 @@ struct TranscriptView: View {
                     KeyHint(key: "⎋", label: "Discard")
                     KeyHint(key: "↵", label: "Copy")
                     KeyHint(key: "⌘1", label: "Summarize")
+                    KeyHint(key: "⌘2", label: "Feedback")
                 }
             }
             .padding(.horizontal, 16)

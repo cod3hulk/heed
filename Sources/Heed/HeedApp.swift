@@ -34,6 +34,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlay.onSummarize = { [weak self] in
             self?.startSummarization()
         }
+        overlay.onMeetingFeedback = { [weak self] in
+            self?.startMeetingFeedback()
+        }
         // Defer past applicationDidFinishLaunching — runModal() inside this
         // delegate method crashes AppKit's autorelease pool later.
         DispatchQueue.main.async { self.checkModelAvailability() }
@@ -249,6 +252,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let summary = await runClaudeCLI(pendingTranscript, prompt: prompt)
             let result = summary ?? "(summarization failed — is Claude CLI installed?)"
             overlay.transitionTo(.done(result))
+            appPhase = .done
+            recordingMenuItem.title = "Start Recording"
+        }
+    }
+
+    private func startMeetingFeedback() {
+        guard appPhase == .done, !pendingTranscript.isEmpty else { return }
+        appPhase = .summarizing
+        recordingMenuItem.title = "Analyzing…"
+        overlay.transitionTo(.summarizing)
+
+        Task {
+            let prompt = "Analyze this meeting transcript and provide structured feedback covering: key decisions made, action items with owners (if mentioned), unresolved questions, overall sentiment, and suggested follow-ups."
+            let result = await runClaudeCLI(pendingTranscript, prompt: prompt)
+            let display = result ?? "(feedback failed — is Claude CLI installed?)"
+            overlay.transitionTo(.done(display))
             appPhase = .done
             recordingMenuItem.title = "Start Recording"
         }
