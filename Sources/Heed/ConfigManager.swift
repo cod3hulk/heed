@@ -26,7 +26,6 @@ struct KeyBinding: Codable, Equatable {
         return s
     }
 
-    // Covers the key codes users are likely to configure
     private static let keyNames: [UInt16: String] = [
         // Special
         53: "⎋", 36: "↵", 76: "↩", 51: "⌫", 117: "⌦", 48: "⇥", 49: "Space",
@@ -45,9 +44,22 @@ struct KeyBinding: Codable, Equatable {
          98: "F7", 100: "F8", 101: "F9", 109: "F10", 103: "F11", 111: "F12",
     ]
 
-    // Returns true if this key code is a bare modifier key (Shift, Cmd, etc.)
     static func isModifierKeyCode(_ code: UInt16) -> Bool {
         [54, 55, 56, 57, 58, 59, 60, 61, 62, 63].contains(code)
+    }
+}
+
+// MARK: - LLM Provider
+
+enum LLMProvider: String, Codable, CaseIterable, Identifiable {
+    case claudeCLI = "Claude CLI"
+
+    var id: String { rawValue }
+
+    var description: String {
+        switch self {
+        case .claudeCLI: return "Runs the claude CLI binary, piping the transcript via stdin."
+        }
     }
 }
 
@@ -57,44 +69,74 @@ struct KeyBinding: Codable, Equatable {
 final class ConfigManager: ObservableObject {
     static let shared = ConfigManager()
 
+    // Key bindings
     @Published var discardBinding:   KeyBinding
     @Published var copyBinding:      KeyBinding
     @Published var summarizeBinding: KeyBinding
     @Published var feedbackBinding:  KeyBinding
 
+    // LLM
+    @Published var llmProvider: LLMProvider
+    @Published var claudeCLIPath: String  // empty = resolve via $PATH in zsh login shell
+
+    // Prompts
+    @Published var summaryPrompt: String
+    @Published var feedbackPrompt: String
+
+    static let defaultSummaryPrompt =
+        "Summarize this meeting transcript concisely. List key discussion topics, decisions made, and action items. Be brief and use bullet points."
+
+    static let defaultFeedbackPrompt =
+        "Analyze this meeting transcript and provide structured feedback covering: key decisions made, action items with owners (if mentioned), unresolved questions, overall sentiment, and suggested follow-ups."
+
     private init() {
-        discardBinding   = Self.load(key: "keyBinding.discard",   default: .discard)
-        copyBinding      = Self.load(key: "keyBinding.copy",      default: .copy)
-        summarizeBinding = Self.load(key: "keyBinding.summarize", default: .summarize)
-        feedbackBinding  = Self.load(key: "keyBinding.feedback",  default: .feedback)
+        discardBinding   = Self.loadCodable(key: "keyBinding.discard",   default: .discard)
+        copyBinding      = Self.loadCodable(key: "keyBinding.copy",      default: .copy)
+        summarizeBinding = Self.loadCodable(key: "keyBinding.summarize", default: .summarize)
+        feedbackBinding  = Self.loadCodable(key: "keyBinding.feedback",  default: .feedback)
+
+        llmProvider  = Self.loadCodable(key: "llm.provider",  default: .claudeCLI)
+        claudeCLIPath = UserDefaults.standard.string(forKey: "llm.claudeCLIPath") ?? ""
+
+        summaryPrompt  = UserDefaults.standard.string(forKey: "prompt.summary")  ?? Self.defaultSummaryPrompt
+        feedbackPrompt = UserDefaults.standard.string(forKey: "prompt.feedback") ?? Self.defaultFeedbackPrompt
     }
 
     func save() {
-        store(discardBinding,   key: "keyBinding.discard")
-        store(copyBinding,      key: "keyBinding.copy")
-        store(summarizeBinding, key: "keyBinding.summarize")
-        store(feedbackBinding,  key: "keyBinding.feedback")
+        storeCodable(discardBinding,   key: "keyBinding.discard")
+        storeCodable(copyBinding,      key: "keyBinding.copy")
+        storeCodable(summarizeBinding, key: "keyBinding.summarize")
+        storeCodable(feedbackBinding,  key: "keyBinding.feedback")
+
+        storeCodable(llmProvider, key: "llm.provider")
+        UserDefaults.standard.set(claudeCLIPath, forKey: "llm.claudeCLIPath")
+
+        UserDefaults.standard.set(summaryPrompt,  forKey: "prompt.summary")
+        UserDefaults.standard.set(feedbackPrompt, forKey: "prompt.feedback")
     }
 
-    func resetToDefaults() {
+    func resetKeyBindings() {
         discardBinding   = .discard
         copyBinding      = .copy
         summarizeBinding = .summarize
         feedbackBinding  = .feedback
     }
 
-    // MARK: Private
-
-    private static func load(key: String, default fallback: KeyBinding) -> KeyBinding {
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let binding = try? JSONDecoder().decode(KeyBinding.self, from: data) else {
-            return fallback
-        }
-        return binding
+    func resetPrompts() {
+        summaryPrompt  = Self.defaultSummaryPrompt
+        feedbackPrompt = Self.defaultFeedbackPrompt
     }
 
-    private func store(_ binding: KeyBinding, key: String) {
-        if let data = try? JSONEncoder().encode(binding) {
+    // MARK: Private
+
+    private static func loadCodable<T: Codable>(key: String, default fallback: T) -> T {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let value = try? JSONDecoder().decode(T.self, from: data) else { return fallback }
+        return value
+    }
+
+    private func storeCodable<T: Codable>(_ value: T, key: String) {
+        if let data = try? JSONEncoder().encode(value) {
             UserDefaults.standard.set(data, forKey: key)
         }
     }

@@ -260,7 +260,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlay.transitionTo(.summarizing)
 
         Task {
-            let prompt = "Summarize this meeting transcript concisely. List key discussion topics, decisions made, and action items. Be brief and use bullet points."
+            let prompt = ConfigManager.shared.summaryPrompt
             let summary = await runClaudeCLI(pendingTranscript, prompt: prompt)
             let result = summary ?? "(summarization failed — is Claude CLI installed?)"
             overlay.transitionTo(.result(result))
@@ -276,7 +276,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlay.transitionTo(.summarizing)
 
         Task {
-            let prompt = "Analyze this meeting transcript and provide structured feedback covering: key decisions made, action items with owners (if mentioned), unresolved questions, overall sentiment, and suggested follow-ups."
+            let prompt = ConfigManager.shared.feedbackPrompt
             let result = await runClaudeCLI(pendingTranscript, prompt: prompt)
             let display = result ?? "(feedback failed — is Claude CLI installed?)"
             overlay.transitionTo(.result(display))
@@ -286,12 +286,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func runClaudeCLI(_ transcript: String, prompt: String) async -> String? {
-        await withCheckedContinuation { continuation in
+        let configuredPath = ConfigManager.shared.claudeCLIPath.trimmingCharacters(in: .whitespaces)
+        let binaryRef = configuredPath.isEmpty ? "claude" : configuredPath
+        return await withCheckedContinuation { continuation in
             DispatchQueue.global().async {
                 // Run via zsh login shell so Claude gets its full environment
                 // (Node.js path, auth tokens, etc.) — pipe transcript via stdin.
                 let escapedPrompt = prompt.replacingOccurrences(of: "'", with: "'\\''")
-                let shellCommand = "claude -p '\(escapedPrompt)'"
+                let shellCommand = "\(binaryRef) -p '\(escapedPrompt)'"
 
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: "/bin/zsh")
