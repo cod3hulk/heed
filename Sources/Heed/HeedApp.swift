@@ -25,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        setupMainMenu()
         setupStatusItem()
         requestPermissionsUpfront()
         setupGlobalShortcut()
@@ -58,6 +59,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.toggleRecording()
         }
         shortcutManager.start()
+    }
+
+    // A hidden main menu is required for copy/paste (Cmd+C/V/X/A) to work in
+    // text fields in LSUIElement apps. The menu bar is never shown to the user,
+    // but AppKit routes edit shortcuts through NSApp.mainMenu's responder chain.
+    private func setupMainMenu() {
+        let main = NSMenu()
+
+        let editItem = NSMenuItem()
+        main.addItem(editItem)
+        let edit = NSMenu(title: "Edit")
+        editItem.submenu = edit
+        edit.addItem(NSMenuItem(title: "Cut",        action: #selector(NSText.cut(_:)),       keyEquivalent: "x"))
+        edit.addItem(NSMenuItem(title: "Copy",       action: #selector(NSText.copy(_:)),      keyEquivalent: "c"))
+        edit.addItem(NSMenuItem(title: "Paste",      action: #selector(NSText.paste(_:)),     keyEquivalent: "v"))
+        edit.addItem(NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
+        edit.addItem(.separator())
+        edit.addItem(NSMenuItem(title: "Undo", action: Selector(("undo:")), keyEquivalent: "z"))
+        edit.addItem(NSMenuItem(title: "Redo", action: Selector(("redo:")), keyEquivalent: "Z"))
+
+        NSApp.mainMenu = main
     }
 
     private func setupStatusItem() {
