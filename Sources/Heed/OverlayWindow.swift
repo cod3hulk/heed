@@ -4,8 +4,9 @@ import SwiftUI
 enum OverlayPhase {
     case recording
     case transcribing
-    case done(String)
+    case done(String)      // initial transcript — shows ⌘1/⌘2 action hints
     case summarizing
+    case result(String)    // summary/feedback result — shows only ⎋/↵
 }
 
 @MainActor
@@ -47,9 +48,9 @@ final class OverlayWindow {
         audioServiceRef = nil
 
         switch phase {
-        case .done(let text):
+        case .done(let text), .result(let text):
             pendingTranscript = text
-            resizePanel(height: 260)
+            resizePanel(height: 380)
             // Activate app so the panel can receive key events
             NSApp.activate(ignoringOtherApps: true)
             panel?.makeKeyAndOrderFront(nil)
@@ -217,9 +218,11 @@ struct OverlayContentView: View {
             case .transcribing:
                 TranscribingView()
             case .done(let text):
-                TranscriptView(text: text)
+                TranscriptView(text: text, showActions: true)
             case .summarizing:
                 SummarizingView()
+            case .result(let text):
+                TranscriptView(text: text, showActions: false)
             }
         }
         .background(
@@ -305,30 +308,34 @@ struct SummarizingView: View {
 
 struct TranscriptView: View {
     let text: String
+    let showActions: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ScrollView {
+            ScrollView(.vertical, showsIndicators: true) {
                 Text(text)
                     .font(.system(size: 13))
                     .foregroundColor(.white)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(16)
+                    .textSelection(.enabled)
             }
             .frame(maxHeight: .infinity)
 
             Divider().background(Color.white.opacity(0.15))
 
             HStack {
-                Text("Transcript")
+                Text(showActions ? "Transcript" : "Result")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(.white.opacity(0.6))
                 Spacer()
                 HStack(spacing: 8) {
                     KeyHint(key: "⎋", label: "Discard")
                     KeyHint(key: "↵", label: "Copy")
-                    KeyHint(key: "⌘1", label: "Summarize")
-                    KeyHint(key: "⌘2", label: "Feedback")
+                    if showActions {
+                        KeyHint(key: "⌘1", label: "Summarize")
+                        KeyHint(key: "⌘2", label: "Feedback")
+                    }
                 }
             }
             .padding(.horizontal, 16)

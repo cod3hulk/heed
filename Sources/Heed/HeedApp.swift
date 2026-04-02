@@ -251,7 +251,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let prompt = "Summarize this meeting transcript concisely. List key discussion topics, decisions made, and action items. Be brief and use bullet points."
             let summary = await runClaudeCLI(pendingTranscript, prompt: prompt)
             let result = summary ?? "(summarization failed — is Claude CLI installed?)"
-            overlay.transitionTo(.done(result))
+            overlay.transitionTo(.result(result))
             appPhase = .done
             recordingMenuItem.title = "Start Recording"
         }
@@ -267,7 +267,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let prompt = "Analyze this meeting transcript and provide structured feedback covering: key decisions made, action items with owners (if mentioned), unresolved questions, overall sentiment, and suggested follow-ups."
             let result = await runClaudeCLI(pendingTranscript, prompt: prompt)
             let display = result ?? "(feedback failed — is Claude CLI installed?)"
-            overlay.transitionTo(.done(display))
+            overlay.transitionTo(.result(display))
             appPhase = .done
             recordingMenuItem.title = "Start Recording"
         }
