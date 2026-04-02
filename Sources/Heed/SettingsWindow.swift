@@ -113,22 +113,35 @@ final class SettingsViewModel: ObservableObject {
 
 struct SettingsView: View {
     @ObservedObject var vm: SettingsViewModel
+    @State private var selectedTab = 0
 
     var body: some View {
         VStack(spacing: 0) {
-            TabView {
-                KeyBindingsTab(vm: vm)
-                    .tabItem { Label("Key Bindings", systemImage: "keyboard") }
-                LLMTab(vm: vm)
-                    .tabItem { Label("LLM", systemImage: "cpu") }
-                PromptsTab(vm: vm)
-                    .tabItem { Label("Prompts", systemImage: "text.alignleft") }
+            // Tab selector — segmented control avoids TabView's title-bar clipping issue
+            Picker("", selection: $selectedTab) {
+                Text("Key Bindings").tag(0)
+                Text("LLM").tag(1)
+                Text("Prompts").tag(2)
             }
-            .frame(width: 500, height: 320)
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 20)
+            .padding(.top, 16)
+            .padding(.bottom, 12)
 
             Divider()
 
-            // Global footer shared across all tabs
+            Group {
+                switch selectedTab {
+                case 0: KeyBindingsTab(vm: vm)
+                case 1: LLMTab(vm: vm)
+                default: PromptsTab(vm: vm)
+                }
+            }
+            .frame(width: 500, height: 340)
+
+            Divider()
+
             HStack {
                 Spacer()
                 Button("Cancel") { vm.cancelAndClose() }
