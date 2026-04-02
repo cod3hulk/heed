@@ -161,7 +161,7 @@ final class OverlayWindow {
         if let screen = NSScreen.main {
             let screenFrame = screen.visibleFrame
             let x = screenFrame.midX - 240
-            let y = screenFrame.minY + 60
+            let y = screenFrame.maxY - height - 20
             panel.setFrameOrigin(NSPoint(x: x, y: y))
         }
     }
