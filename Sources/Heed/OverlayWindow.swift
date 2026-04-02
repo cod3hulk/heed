@@ -312,14 +312,17 @@ struct TranscriptView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ScrollView(.vertical, showsIndicators: true) {
+            ScrollView(.vertical) {
                 Text(text)
                     .font(.system(size: 13))
                     .foregroundColor(.white)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(16)
+                    .padding(.leading, 16)
+                    .padding(.trailing, 24) // leave room for scrollbar
+                    .padding(.vertical, 16)
                     .textSelection(.enabled)
             }
+            .scrollIndicators(.visible)
             .frame(maxHeight: .infinity)
 
             Divider().background(Color.white.opacity(0.15))
