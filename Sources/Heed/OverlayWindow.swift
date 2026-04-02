@@ -79,34 +79,34 @@ final class OverlayWindow {
     // MARK: - Key handling
 
     private func installKeyMonitor() {
+        let cfg = ConfigManager.shared
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
-            switch event.keyCode {
-            case 53: // Escape — discard
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            func matches(_ binding: KeyBinding) -> Bool {
+                event.keyCode == binding.keyCode && flags.rawValue == binding.modifierFlags
+            }
+            if matches(cfg.discardBinding) {
                 self.hide()
                 self.onDismiss?()
                 return nil
-            case 36: // Return — copy transcript then discard
+            }
+            if matches(cfg.copyBinding) {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(self.pendingTranscript, forType: .string)
                 self.hide()
                 self.onDismiss?()
                 return nil
-            case 18: // 1 — ⌘1 to summarize
-                if event.modifierFlags.contains(.command) {
-                    self.onSummarize?()
-                    return nil
-                }
-                return event
-            case 19: // 2 — ⌘2 for meeting feedback
-                if event.modifierFlags.contains(.command) {
-                    self.onMeetingFeedback?()
-                    return nil
-                }
-                return event
-            default:
-                return event
             }
+            if matches(cfg.summarizeBinding) {
+                self.onSummarize?()
+                return nil
+            }
+            if matches(cfg.feedbackBinding) {
+                self.onMeetingFeedback?()
+                return nil
+            }
+            return event
         }
     }
 

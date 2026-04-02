@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let shortcutManager = GlobalShortcutManager()
     private let overlay = OverlayWindow()
     private var recordingMenuItem: NSMenuItem!
+    private lazy var settingsWindowController = SettingsWindowController()
 
     private enum AppPhase { case idle, recording, transcribing, done, summarizing }
     private var appPhase: AppPhase = .idle
@@ -72,6 +73,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         recordingMenuItem.keyEquivalentModifierMask = [.command, .shift]
         recordingMenuItem.target = self
         menu.addItem(recordingMenuItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
+        settingsItem.keyEquivalentModifierMask = .command
+        settingsItem.target = self
+        menu.addItem(settingsItem)
 
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
@@ -140,6 +148,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         try? data.write(to: url)
+    }
+
+    @objc private func openSettings() {
+        settingsWindowController.show()
     }
 
     @objc private func toggleRecording() {
