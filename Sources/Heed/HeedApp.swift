@@ -257,27 +257,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func runClaudeCLI(_ transcript: String, prompt: String) async -> String? {
         await withCheckedContinuation { continuation in
             DispatchQueue.global().async {
-                let candidatePaths = [
-                    "/usr/local/bin/claude",
-                    "/opt/homebrew/bin/claude",
-                    "/usr/bin/claude",
-                    (ProcessInfo.processInfo.environment["HOME"] ?? "") + "/.local/bin/claude"
-                ]
-                guard let claudePath = candidatePaths.first(where: { FileManager.default.fileExists(atPath: $0) }) else {
-                    print("Claude CLI not found in PATH candidates")
-                    continuation.resume(returning: nil)
-                    return
-                }
+                // Run via zsh login shell so Claude gets its full environment
+                // (Node.js path, auth tokens, etc.) — pipe transcript via stdin.
+                let escapedPrompt = prompt.replacingOccurrences(of: "'", with: "'\\''")
+                let shellCommand = "claude -p '\(escapedPrompt)'"
 
                 let process = Process()
-                process.executableURL = URL(fileURLWithPath: claudePath)
-                process.arguments = ["-p", prompt]
+                process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+                process.arguments = ["-l", "-c", shellCommand]
 
                 let inputPipe = Pipe()
                 let outputPipe = Pipe()
+                let errorPipe = Pipe()
                 process.standardInput = inputPipe
                 process.standardOutput = outputPipe
-                process.standardError = Pipe() // suppress stderr
+                process.standardError = errorPipe
 
                 do {
                     try process.run()
@@ -285,9 +279,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     inputPipe.fileHandleForWriting.closeFile()
                     process.waitUntilExit()
 
+                    let errData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                    if let errText = String(data: errData, encoding: .utf8), !errText.isEmpty {
+                        print("Claude CLI stderr: \(errText)")
+                    }
+
                     let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
                     let output = String(data: data, encoding: .utf8)?
                         .trimmingCharacters(in: .whitespacesAndNewlines)
+                    print("Claude CLI exit code: \(process.terminationStatus), output length: \(output?.count ?? 0)")
                     continuation.resume(returning: output?.isEmpty == false ? output : nil)
                 } catch {
                     print("Failed to run Claude CLI: \(error)")
