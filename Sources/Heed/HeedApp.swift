@@ -259,10 +259,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         recordingMenuItem.title = "Summarizing…"
         overlay.transitionTo(.summarizing)
 
+        // Capture all config synchronously on the main actor before entering the Task.
+        let transcript = pendingTranscript
+        let prompt     = ConfigManager.shared.summaryPrompt
+        let provider   = ConfigManager.shared.llmProvider
+
         Task {
-            let prompt = ConfigManager.shared.summaryPrompt
-            let summary = await runClaudeCLI(pendingTranscript, prompt: prompt)
-            let result = summary ?? "(summarization failed — is Claude CLI installed?)"
+            let summary = await runLLM(transcript: transcript, prompt: prompt, provider: provider)
+            let result  = summary ?? "(summarization failed)"
             overlay.transitionTo(.result(result))
             appPhase = .done
             recordingMenuItem.title = "Start Recording"
@@ -275,36 +279,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         recordingMenuItem.title = "Analyzing…"
         overlay.transitionTo(.summarizing)
 
+        let transcript = pendingTranscript
+        let prompt     = ConfigManager.shared.feedbackPrompt
+        let provider   = ConfigManager.shared.llmProvider
+
         Task {
-            let prompt = ConfigManager.shared.feedbackPrompt
-            let result = await runClaudeCLI(pendingTranscript, prompt: prompt)
-            let display = result ?? "(feedback failed — is Claude CLI installed?)"
+            let result  = await runLLM(transcript: transcript, prompt: prompt, provider: provider)
+            let display = result ?? "(feedback failed)"
             overlay.transitionTo(.result(display))
             appPhase = .done
             recordingMenuItem.title = "Start Recording"
         }
     }
 
-    private func runClaudeCLI(_ transcript: String, prompt: String) async -> String? {
-        let configuredPath = ConfigManager.shared.claudeCLIPath.trimmingCharacters(in: .whitespaces)
-        let binaryRef = configuredPath.isEmpty ? "claude" : configuredPath
-        return await withCheckedContinuation { continuation in
+    // MARK: - LLM dispatch
+
+    private func runLLM(transcript: String, prompt: String, provider: LLMProvider) async -> String? {
+        switch provider {
+        case .claudeCLI:
+            let path = ConfigManager.shared.claudeCLIPath.trimmingCharacters(in: .whitespaces)
+            let binary = path.isEmpty ? "claude" : path
+            return await runClaudeCLI(transcript: transcript, prompt: prompt, binary: binary)
+        case .ollama:
+            let endpoint = ConfigManager.shared.ollamaEndpoint.trimmingCharacters(in: .whitespaces)
+            let model    = ConfigManager.shared.ollamaModel.trimmingCharacters(in: .whitespaces)
+            return await runOllama(transcript: transcript, prompt: prompt,
+                                   endpoint: endpoint.isEmpty ? "http://localhost:11434" : endpoint,
+                                   model:    model.isEmpty    ? "llama3"                 : model)
+        }
+    }
+
+    private func runClaudeCLI(transcript: String, prompt: String, binary: String) async -> String? {
+        await withCheckedContinuation { continuation in
             DispatchQueue.global().async {
                 // Run via zsh login shell so Claude gets its full environment
                 // (Node.js path, auth tokens, etc.) — pipe transcript via stdin.
                 let escapedPrompt = prompt.replacingOccurrences(of: "'", with: "'\\''")
-                let shellCommand = "\(binaryRef) -p '\(escapedPrompt)'"
+                let shellCommand  = "\(binary) -p '\(escapedPrompt)'"
 
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: "/bin/zsh")
                 process.arguments = ["-l", "-c", shellCommand]
 
-                let inputPipe = Pipe()
+                let inputPipe  = Pipe()
                 let outputPipe = Pipe()
-                let errorPipe = Pipe()
-                process.standardInput = inputPipe
+                let errorPipe  = Pipe()
+                process.standardInput  = inputPipe
                 process.standardOutput = outputPipe
-                process.standardError = errorPipe
+                process.standardError  = errorPipe
 
                 do {
                     try process.run()
@@ -317,16 +339,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         print("Claude CLI stderr: \(errText)")
                     }
 
-                    let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
+                    let data   = outputPipe.fileHandleForReading.readDataToEndOfFile()
                     let output = String(data: data, encoding: .utf8)?
                         .trimmingCharacters(in: .whitespacesAndNewlines)
-                    print("Claude CLI exit code: \(process.terminationStatus), output length: \(output?.count ?? 0)")
+                    print("Claude CLI exit: \(process.terminationStatus), output: \(output?.count ?? 0) chars")
                     continuation.resume(returning: output?.isEmpty == false ? output : nil)
                 } catch {
-                    print("Failed to run Claude CLI: \(error)")
+                    print("Claude CLI launch failed: \(error)")
                     continuation.resume(returning: nil)
                 }
             }
+        }
+    }
+
+    private func runOllama(transcript: String, prompt: String,
+                            endpoint: String, model: String) async -> String? {
+        guard let url = URL(string: "\(endpoint)/api/generate") else {
+            print("Ollama: invalid endpoint URL '\(endpoint)'")
+            return nil
+        }
+        let body: [String: Any] = [
+            "model":  model,
+            "prompt": "\(prompt)\n\n\(transcript)",
+            "stream": false,
+        ]
+        guard let bodyData = try? JSONSerialization.data(withJSONObject: body) else { return nil }
+
+        var request = URLRequest(url: url, timeoutInterval: 300)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = bodyData
+
+        do {
+            let (data, _) = try await URLSession.shared.data(for: request)
+            if let json     = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let response = json["response"] as? String {
+                let trimmed = response.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : trimmed
+            }
+            print("Ollama: unexpected response: \(String(data: data, encoding: .utf8) ?? "<binary>")")
+            return nil
+        } catch {
+            print("Ollama request failed: \(error)")
+            return nil
         }
     }
 

@@ -53,12 +53,14 @@ struct KeyBinding: Codable, Equatable {
 
 enum LLMProvider: String, Codable, CaseIterable, Identifiable {
     case claudeCLI = "Claude CLI"
+    case ollama    = "Ollama"
 
     var id: String { rawValue }
 
     var description: String {
         switch self {
         case .claudeCLI: return "Runs the claude CLI binary, piping the transcript via stdin."
+        case .ollama:    return "Sends requests to a local Ollama HTTP server (/api/generate)."
         }
     }
 }
@@ -77,7 +79,9 @@ final class ConfigManager: ObservableObject {
 
     // LLM
     @Published var llmProvider: LLMProvider
-    @Published var claudeCLIPath: String  // empty = resolve via $PATH in zsh login shell
+    @Published var claudeCLIPath: String   // empty = resolve via $PATH in zsh login shell
+    @Published var ollamaEndpoint: String  // empty = http://localhost:11434
+    @Published var ollamaModel: String     // empty = llama3
 
     // Prompts
     @Published var summaryPrompt: String
@@ -95,8 +99,10 @@ final class ConfigManager: ObservableObject {
         summarizeBinding = Self.loadCodable(key: "keyBinding.summarize", default: .summarize)
         feedbackBinding  = Self.loadCodable(key: "keyBinding.feedback",  default: .feedback)
 
-        llmProvider  = Self.loadCodable(key: "llm.provider",  default: .claudeCLI)
-        claudeCLIPath = UserDefaults.standard.string(forKey: "llm.claudeCLIPath") ?? ""
+        llmProvider   = Self.loadCodable(key: "llm.provider",  default: .claudeCLI)
+        claudeCLIPath = UserDefaults.standard.string(forKey: "llm.claudeCLIPath")   ?? ""
+        ollamaEndpoint = UserDefaults.standard.string(forKey: "llm.ollamaEndpoint") ?? ""
+        ollamaModel    = UserDefaults.standard.string(forKey: "llm.ollamaModel")    ?? ""
 
         summaryPrompt  = UserDefaults.standard.string(forKey: "prompt.summary")  ?? Self.defaultSummaryPrompt
         feedbackPrompt = UserDefaults.standard.string(forKey: "prompt.feedback") ?? Self.defaultFeedbackPrompt
@@ -109,7 +115,9 @@ final class ConfigManager: ObservableObject {
         storeCodable(feedbackBinding,  key: "keyBinding.feedback")
 
         storeCodable(llmProvider, key: "llm.provider")
-        UserDefaults.standard.set(claudeCLIPath, forKey: "llm.claudeCLIPath")
+        UserDefaults.standard.set(claudeCLIPath,   forKey: "llm.claudeCLIPath")
+        UserDefaults.standard.set(ollamaEndpoint,  forKey: "llm.ollamaEndpoint")
+        UserDefaults.standard.set(ollamaModel,     forKey: "llm.ollamaModel")
 
         UserDefaults.standard.set(summaryPrompt,  forKey: "prompt.summary")
         UserDefaults.standard.set(feedbackPrompt, forKey: "prompt.feedback")

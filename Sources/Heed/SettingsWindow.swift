@@ -45,6 +45,8 @@ final class SettingsViewModel: ObservableObject {
     // LLM
     @Published var llmProvider: LLMProvider
     @Published var claudeCLIPath: String
+    @Published var ollamaEndpoint: String
+    @Published var ollamaModel: String
 
     // Prompts
     @Published var summaryPrompt: String
@@ -59,9 +61,11 @@ final class SettingsViewModel: ObservableObject {
         copy          = cfg.copyBinding
         summarize     = cfg.summarizeBinding
         feedback      = cfg.feedbackBinding
-        llmProvider   = cfg.llmProvider
-        claudeCLIPath = cfg.claudeCLIPath
-        summaryPrompt = cfg.summaryPrompt
+        llmProvider    = cfg.llmProvider
+        claudeCLIPath  = cfg.claudeCLIPath
+        ollamaEndpoint = cfg.ollamaEndpoint
+        ollamaModel    = cfg.ollamaModel
+        summaryPrompt  = cfg.summaryPrompt
         feedbackPrompt = cfg.feedbackPrompt
     }
 
@@ -100,9 +104,11 @@ final class SettingsViewModel: ObservableObject {
         cfg.copyBinding      = copy
         cfg.summarizeBinding = summarize
         cfg.feedbackBinding  = feedback
-        cfg.llmProvider      = llmProvider
-        cfg.claudeCLIPath    = claudeCLIPath
-        cfg.summaryPrompt    = summaryPrompt
+        cfg.llmProvider     = llmProvider
+        cfg.claudeCLIPath   = claudeCLIPath
+        cfg.ollamaEndpoint  = ollamaEndpoint
+        cfg.ollamaModel     = ollamaModel
+        cfg.summaryPrompt   = summaryPrompt
         cfg.feedbackPrompt   = feedbackPrompt
         cfg.save()
         onClose?()
@@ -123,6 +129,8 @@ final class SettingsViewModel: ObservableObject {
         feedback       = cfg.feedbackBinding
         llmProvider    = cfg.llmProvider
         claudeCLIPath  = cfg.claudeCLIPath
+        ollamaEndpoint = cfg.ollamaEndpoint
+        ollamaModel    = cfg.ollamaModel
         summaryPrompt  = cfg.summaryPrompt
         feedbackPrompt = cfg.feedbackPrompt
     }
@@ -292,6 +300,27 @@ struct LLMTab: View {
                     Text("Leave blank to resolve claude via your $PATH (recommended). Set an explicit path if the app cannot find it.")
                         .font(.caption)
                         .foregroundColor(.secondary)
+                }
+            case .ollama:
+                VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Endpoint URL")
+                            .font(.headline)
+                        TextField("http://localhost:11434", text: $vm.ollamaEndpoint)
+                            .textFieldStyle(.roundedBorder)
+                        Text("Leave blank to use the default local address.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Model")
+                            .font(.headline)
+                        TextField("llama3", text: $vm.ollamaModel)
+                            .textFieldStyle(.roundedBorder)
+                        Text("Must match a model you have pulled in Ollama (e.g. llama3, mistral, phi3).")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                 }
             }
 
