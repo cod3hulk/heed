@@ -53,6 +53,7 @@ struct KeyBinding: Codable, Equatable {
 
 enum LLMProvider: String, Codable, CaseIterable, Identifiable {
     case claudeCLI = "Claude CLI"
+    case geminiCLI = "Gemini CLI"
     case ollama    = "Ollama"
 
     var id: String { rawValue }
@@ -60,6 +61,7 @@ enum LLMProvider: String, Codable, CaseIterable, Identifiable {
     var description: String {
         switch self {
         case .claudeCLI: return "Runs the claude CLI binary, piping the transcript via stdin."
+        case .geminiCLI: return "Runs the gemini CLI binary, piping the transcript via stdin."
         case .ollama:    return "Sends requests to a local Ollama HTTP server (/api/generate)."
         }
     }
@@ -80,6 +82,7 @@ final class ConfigManager: ObservableObject {
     // LLM
     @Published var llmProvider: LLMProvider
     @Published var claudeCLIPath: String   // empty = resolve via $PATH in zsh login shell
+    @Published var geminiCLIPath: String   // empty = resolve via $PATH in zsh login shell
     @Published var ollamaEndpoint: String  // empty = http://localhost:11434
     @Published var ollamaModel: String     // empty = llama3
 
@@ -100,7 +103,8 @@ final class ConfigManager: ObservableObject {
         feedbackBinding  = Self.loadCodable(key: "keyBinding.feedback",  default: .feedback)
 
         llmProvider   = Self.loadCodable(key: "llm.provider",  default: .claudeCLI)
-        claudeCLIPath = UserDefaults.standard.string(forKey: "llm.claudeCLIPath")   ?? ""
+        claudeCLIPath  = UserDefaults.standard.string(forKey: "llm.claudeCLIPath")   ?? ""
+        geminiCLIPath  = UserDefaults.standard.string(forKey: "llm.geminiCLIPath")   ?? ""
         ollamaEndpoint = UserDefaults.standard.string(forKey: "llm.ollamaEndpoint") ?? ""
         ollamaModel    = UserDefaults.standard.string(forKey: "llm.ollamaModel")    ?? ""
 
@@ -116,6 +120,7 @@ final class ConfigManager: ObservableObject {
 
         storeCodable(llmProvider, key: "llm.provider")
         UserDefaults.standard.set(claudeCLIPath,   forKey: "llm.claudeCLIPath")
+        UserDefaults.standard.set(geminiCLIPath,   forKey: "llm.geminiCLIPath")
         UserDefaults.standard.set(ollamaEndpoint,  forKey: "llm.ollamaEndpoint")
         UserDefaults.standard.set(ollamaModel,     forKey: "llm.ollamaModel")
 

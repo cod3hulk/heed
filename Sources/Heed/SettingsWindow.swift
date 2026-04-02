@@ -45,6 +45,7 @@ final class SettingsViewModel: ObservableObject {
     // LLM
     @Published var llmProvider: LLMProvider
     @Published var claudeCLIPath: String
+    @Published var geminiCLIPath: String
     @Published var ollamaEndpoint: String
     @Published var ollamaModel: String
 
@@ -63,6 +64,7 @@ final class SettingsViewModel: ObservableObject {
         feedback      = cfg.feedbackBinding
         llmProvider    = cfg.llmProvider
         claudeCLIPath  = cfg.claudeCLIPath
+        geminiCLIPath  = cfg.geminiCLIPath
         ollamaEndpoint = cfg.ollamaEndpoint
         ollamaModel    = cfg.ollamaModel
         summaryPrompt  = cfg.summaryPrompt
@@ -106,6 +108,7 @@ final class SettingsViewModel: ObservableObject {
         cfg.feedbackBinding  = feedback
         cfg.llmProvider     = llmProvider
         cfg.claudeCLIPath   = claudeCLIPath
+        cfg.geminiCLIPath   = geminiCLIPath
         cfg.ollamaEndpoint  = ollamaEndpoint
         cfg.ollamaModel     = ollamaModel
         cfg.summaryPrompt   = summaryPrompt
@@ -129,6 +132,7 @@ final class SettingsViewModel: ObservableObject {
         feedback       = cfg.feedbackBinding
         llmProvider    = cfg.llmProvider
         claudeCLIPath  = cfg.claudeCLIPath
+        geminiCLIPath  = cfg.geminiCLIPath
         ollamaEndpoint = cfg.ollamaEndpoint
         ollamaModel    = cfg.ollamaModel
         summaryPrompt  = cfg.summaryPrompt
@@ -298,6 +302,16 @@ struct LLMTab: View {
                     TextField("/opt/homebrew/bin/claude", text: $vm.claudeCLIPath)
                         .textFieldStyle(.roundedBorder)
                     Text("Leave blank to resolve claude via your $PATH (recommended). Set an explicit path if the app cannot find it.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            case .geminiCLI:
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Binary Path")
+                        .font(.headline)
+                    TextField("/opt/homebrew/bin/gemini", text: $vm.geminiCLIPath)
+                        .textFieldStyle(.roundedBorder)
+                    Text("Leave blank to resolve gemini via your $PATH (recommended). Set an explicit path if the app cannot find it.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }

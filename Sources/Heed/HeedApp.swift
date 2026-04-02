@@ -322,6 +322,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let path = ConfigManager.shared.claudeCLIPath.trimmingCharacters(in: .whitespaces)
             let binary = path.isEmpty ? "claude" : path
             return await runClaudeCLI(transcript: transcript, prompt: prompt, binary: binary)
+        case .geminiCLI:
+            let path = ConfigManager.shared.geminiCLIPath.trimmingCharacters(in: .whitespaces)
+            let binary = path.isEmpty ? "gemini" : path
+            return await runClaudeCLI(transcript: transcript, prompt: prompt, binary: binary)
         case .ollama:
             let endpoint = ConfigManager.shared.ollamaEndpoint.trimmingCharacters(in: .whitespaces)
             let model    = ConfigManager.shared.ollamaModel.trimmingCharacters(in: .whitespaces)
