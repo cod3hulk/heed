@@ -309,6 +309,7 @@ struct SummarizingView: View {
 struct TranscriptView: View {
     let text: String
     let showActions: Bool
+    @ObservedObject private var config = ConfigManager.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -333,11 +334,11 @@ struct TranscriptView: View {
                     .foregroundColor(.white.opacity(0.6))
                 Spacer()
                 HStack(spacing: 8) {
-                    KeyHint(key: "⎋", label: "Discard")
-                    KeyHint(key: "↵", label: "Copy")
+                    KeyHint(key: config.discardBinding.displayString,  label: "Discard")
+                    KeyHint(key: config.copyBinding.displayString,     label: "Copy")
                     if showActions {
-                        KeyHint(key: "⌘1", label: "Summarize")
-                        KeyHint(key: "⌘2", label: "Feedback")
+                        KeyHint(key: config.summarizeBinding.displayString, label: "Summarize")
+                        KeyHint(key: config.feedbackBinding.displayString,  label: "Feedback")
                     }
                 }
             }

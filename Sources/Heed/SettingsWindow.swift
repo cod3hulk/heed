@@ -5,19 +5,24 @@ import SwiftUI
 
 @MainActor
 final class SettingsWindowController: NSWindowController {
-    convenience init() {
+    private let vm: SettingsViewModel
+
+    init() {
         let vm = SettingsViewModel()
-        let view = SettingsView(vm: vm)
-        let hosting = NSHostingController(rootView: view)
+        let hosting = NSHostingController(rootView: SettingsView(vm: vm))
         let window = NSWindow(contentViewController: hosting)
         window.title = "Heed Settings"
         window.styleMask = [.titled, .closable]
         window.isReleasedWhenClosed = false
-        self.init(window: window)
+        self.vm = vm
+        super.init(window: window)
         vm.onClose = { [weak self] in self?.close() }
     }
 
+    required init?(coder: NSCoder) { fatalError("not used") }
+
     func show() {
+        vm.syncFromConfig()  // reset to saved config, discarding any prior unsaved edits
         window?.center()
         showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -106,6 +111,20 @@ final class SettingsViewModel: ObservableObject {
     func cancelAndClose() {
         stopRecording()
         onClose?()
+    }
+
+    /// Re-load values from the saved config. Called each time the window is shown
+    /// so that a previous cancel doesn't leave stale unsaved values on screen.
+    func syncFromConfig() {
+        let cfg = ConfigManager.shared
+        discard        = cfg.discardBinding
+        copy           = cfg.copyBinding
+        summarize      = cfg.summarizeBinding
+        feedback       = cfg.feedbackBinding
+        llmProvider    = cfg.llmProvider
+        claudeCLIPath  = cfg.claudeCLIPath
+        summaryPrompt  = cfg.summaryPrompt
+        feedbackPrompt = cfg.feedbackPrompt
     }
 }
 
