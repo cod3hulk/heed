@@ -27,9 +27,9 @@ final class OverlayWindow {
     /// Called when ESC or Return is pressed in the done state.
     var onDismiss: (() -> Void)?
     /// Called when ⌘1 is pressed in the done state to request summarization.
-    var onSummarize: (() -> Void)?
+    var onSummarize: (() -> Void)? { didSet { waveformModel.onSummarizeTapped = onSummarize } }
     /// Called when ⌘2 is pressed in the done state to request meeting feedback.
-    var onMeetingFeedback: (() -> Void)?
+    var onMeetingFeedback: (() -> Void)? { didSet { waveformModel.onFeedbackTapped = onMeetingFeedback } }
 
     func show(audioService: AudioCaptureService, systemAudio: SystemAudioCapture? = nil) {
         guard panel == nil else { return }
@@ -71,7 +71,24 @@ final class OverlayWindow {
         waveformModel.phase = phase
 
         switch phase {
-        case .done(let text), .result(let text):
+        case .done(let text):
+            pendingTranscript = text
+            waveformModel.onCopyTapped = { [weak self] in
+                guard let self else { return }
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(self.pendingTranscript, forType: .string)
+                self.hide()
+                self.onDismiss?()
+            }
+            waveformModel.onDiscardTapped = { [weak self] in
+                self?.hide()
+                self?.onDismiss?()
+            }
+            resizePanel(width: 600, height: 60, autoFit: true)
+            NSApp.activate(ignoringOtherApps: true)
+            panel?.makeKeyAndOrderFront(nil)
+            installKeyMonitor()
+        case .result(let text):
             pendingTranscript = text
             resizePanel(width: 480, height: 380)
             NSApp.activate(ignoringOtherApps: true)
@@ -217,6 +234,10 @@ final class WaveformModel: ObservableObject {
     @Published var phase: OverlayPhase = .recording
     @Published var elapsedSeconds: Int = 0
     var onStopTapped: (() -> Void)?
+    var onSummarizeTapped: (() -> Void)?
+    var onFeedbackTapped: (() -> Void)?
+    var onCopyTapped: (() -> Void)?
+    var onDiscardTapped: (() -> Void)?
     private var animPhase: Double = 0
     private var smoothedLevel: Float = 0
 
@@ -246,6 +267,10 @@ final class WaveformModel: ObservableObject {
         animPhase = 0
         elapsedSeconds = 0
         phase = .recording
+        onSummarizeTapped = nil
+        onFeedbackTapped = nil
+        onCopyTapped = nil
+        onDiscardTapped = nil
     }
 }
 
@@ -260,8 +285,8 @@ struct OverlayContentView: View {
             RecordingView(model: model)
         case .transcribing:
             TranscribingView()
-        case .done(let text):
-            TranscriptView(text: text, showActions: true).cardStyle()
+        case .done(_):
+            TranscriptionReadyView(model: model)
         case .summarizing:
             SummarizingView().cardStyle()
         case .result(let text):
@@ -429,6 +454,115 @@ struct TranscribingView: View {
                 shimmerOffset = 1.0
             }
         }
+    }
+}
+
+struct TranscriptionReadyView: View {
+    @ObservedObject var model: WaveformModel
+    @State private var dotPulsing = false
+    private static let accentColor = Color(red: 0.369, green: 0.361, blue: 0.902) // #5e5ce6
+
+    var body: some View {
+        HStack(spacing: 0) {
+            // Status indicator: pulsing dot + label
+            HStack(spacing: 10) {
+                ZStack {
+                    Circle()
+                        .fill(Self.accentColor.opacity(0.35))
+                        .frame(width: 10, height: 10)
+                        .scaleEffect(dotPulsing ? 2.2 : 1.0)
+                        .opacity(dotPulsing ? 0 : 0.35)
+                        .animation(.easeOut(duration: 1.2).repeatForever(autoreverses: false), value: dotPulsing)
+                    Circle()
+                        .fill(Self.accentColor)
+                        .frame(width: 10, height: 10)
+                        .shadow(color: Self.accentColor.opacity(0.5), radius: 6)
+                }
+                Text("TRANSCRIPTION READY")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(.white)
+                    .tracking(0.5)
+            }
+            .padding(.leading, 20)
+
+            pillSeparator.padding(.horizontal, 16)
+
+            // Action chips
+            HStack(spacing: 6) {
+                ActionChip(key: "⌘1", label: "Summarize") { model.onSummarizeTapped?() }
+                ActionChip(key: "⌘2", label: "Feedback")  { model.onFeedbackTapped?() }
+                ActionChip(key: "↵",  label: "Copy")      { model.onCopyTapped?() }
+                ActionChip(key: "⎋",  label: "Discard")   { model.onDiscardTapped?() }
+            }
+            .padding(.trailing, 8)
+
+            pillSeparator.padding(.horizontal, 12)
+
+            // Close button
+            Button { model.onDiscardTapped?() } label: {
+                ZStack {
+                    Circle()
+                        .fill(Color.white.opacity(0.1))
+                        .frame(width: 24, height: 24)
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.5))
+                }
+            }
+            .buttonStyle(.plain)
+            .padding(.trailing, 16)
+        }
+        .frame(height: 44)
+        .background(
+            Capsule()
+                .fill(.ultraThinMaterial)
+                .environment(\.colorScheme, .dark)
+        )
+        .overlay(
+            Capsule()
+                .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
+        )
+        .padding(.horizontal, 8)
+        .padding(.vertical, 8)
+        .fixedSize(horizontal: true, vertical: false)
+        .onAppear { dotPulsing = true }
+    }
+
+    private var pillSeparator: some View {
+        Rectangle()
+            .fill(Color.white.opacity(0.1))
+            .frame(width: 1, height: 16)
+    }
+}
+
+struct ActionChip: View {
+    let key: String
+    let label: String
+    let action: () -> Void
+    @State private var isHovered = false
+    private static let accentColor = Color(red: 0.369, green: 0.361, blue: 0.902) // #5e5ce6
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Text(key)
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(Self.accentColor)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 3)
+                    .background(Self.accentColor.opacity(0.15))
+                    .cornerRadius(4)
+                Text(label)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.white.opacity(isHovered ? 1.0 : 0.8))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color.white.opacity(isHovered ? 0.1 : 0.07))
+            .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
     }
 }
 
