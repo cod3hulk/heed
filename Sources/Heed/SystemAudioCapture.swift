@@ -8,6 +8,11 @@ import os
 final class SystemAudioCollector: NSObject, SCStreamOutput, @unchecked Sendable {
     private let lock = OSAllocatedUnfairLock()
     private var samples: [Float] = []
+    private var _level: Float = 0
+
+    var level: Float {
+        lock.withLock { _level }
+    }
 
     func stream(_ stream: SCStream,
                 didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
@@ -67,7 +72,14 @@ final class SystemAudioCollector: NSObject, SCStreamOutput, @unchecked Sendable 
         }
 
         let captured = mono
-        lock.withLock { samples.append(contentsOf: captured) }
+        lock.withLock {
+            samples.append(contentsOf: captured)
+            if !captured.isEmpty {
+                var sum: Float = 0
+                for s in captured { sum += s * s }
+                _level = min(1.0, sqrtf(sum / Float(captured.count)) * 10)
+            }
+        }
     }
 
     func drain() -> [Float] {
@@ -79,7 +91,7 @@ final class SystemAudioCollector: NSObject, SCStreamOutput, @unchecked Sendable 
     }
 
     func reset() {
-        lock.withLock { samples = [] }
+        lock.withLock { samples = []; _level = 0 }
     }
 }
 
@@ -94,6 +106,8 @@ final class SystemAudioCapture {
     // MARK: - Public API
 
     var isCapturing: Bool { stream != nil }
+
+    var currentLevel: Float { collector.level }
 
     /// Start capturing all system audio (excludes this process's own audio output).
     /// Throws if ScreenCaptureKit is unavailable or permission is denied.

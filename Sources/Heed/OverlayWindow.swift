@@ -14,6 +14,7 @@ final class OverlayWindow {
     private var panel: NSPanel?
     private let waveformModel = WaveformModel()
     private weak var audioServiceRef: AudioCaptureService?
+    private weak var systemAudioRef: SystemAudioCapture?
     private var levelTimer: Timer?
     private var secondsTimer: Timer?
     private var keyMonitor: Any?
@@ -30,9 +31,10 @@ final class OverlayWindow {
     /// Called when ⌘2 is pressed in the done state to request meeting feedback.
     var onMeetingFeedback: (() -> Void)?
 
-    func show(audioService: AudioCaptureService) {
+    func show(audioService: AudioCaptureService, systemAudio: SystemAudioCapture? = nil) {
         guard panel == nil else { return }
         audioServiceRef = audioService
+        systemAudioRef = systemAudio
         waveformModel.phase = .recording
 
         makePanel(width: 500, height: 60, autoFit: true)
@@ -40,7 +42,9 @@ final class OverlayWindow {
         let levelTimer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, let service = self.audioServiceRef else { return }
-                self.waveformModel.updateLevel(service.currentLevel)
+                let micLevel = service.currentLevel
+                let sysLevel = self.systemAudioRef?.currentLevel ?? 0
+                self.waveformModel.updateLevel(max(micLevel, sysLevel))
             }
         }
         RunLoop.main.add(levelTimer, forMode: .common)
@@ -61,6 +65,7 @@ final class OverlayWindow {
         secondsTimer?.invalidate()
         secondsTimer = nil
         audioServiceRef = nil
+        systemAudioRef = nil
 
         // Set phase first so SwiftUI layout reflects new content before autoFit measurement
         waveformModel.phase = phase
@@ -92,6 +97,7 @@ final class OverlayWindow {
         panel = nil
         waveformModel.reset()
         audioServiceRef = nil
+        systemAudioRef = nil
         pendingTranscript = ""
     }
 

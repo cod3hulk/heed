@@ -204,7 +204,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     print("System audio capture unavailable: \(error) — mic only")
                 }
             }
-            overlay.show(audioService: audioService)
+            overlay.show(audioService: audioService, systemAudio: systemAudio)
             recordingMenuItem.title = "Stop Recording"
             appPhase = .recording
         } catch {
