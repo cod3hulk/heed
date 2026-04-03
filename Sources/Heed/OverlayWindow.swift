@@ -6,7 +6,7 @@ enum OverlayPhase {
     case transcribing
     case done(String)      // initial transcript — shows ⌘1/⌘2 action hints
     case summarizing
-    case result(String)    // summary/feedback result — shows only ⎋/↵
+    case result(String, title: String)    // summary/feedback result — shows only ⎋/↵
 }
 
 @MainActor
@@ -88,9 +88,20 @@ final class OverlayWindow {
             NSApp.activate(ignoringOtherApps: true)
             panel?.makeKeyAndOrderFront(nil)
             installKeyMonitor()
-        case .result(let text):
+        case .result(let text, _):
             pendingTranscript = text
-            resizePanel(width: 480, height: 380)
+            waveformModel.onCopyTapped = { [weak self] in
+                guard let self else { return }
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(self.pendingTranscript, forType: .string)
+                self.hide()
+                self.onDismiss?()
+            }
+            waveformModel.onDiscardTapped = { [weak self] in
+                self?.hide()
+                self?.onDismiss?()
+            }
+            resizePanel(width: 480, height: 440)
             NSApp.activate(ignoringOtherApps: true)
             panel?.makeKeyAndOrderFront(nil)
             installKeyMonitor()
@@ -289,8 +300,8 @@ struct OverlayContentView: View {
             TranscriptionReadyView(model: model)
         case .summarizing:
             SummarizingView()
-        case .result(let text):
-            TranscriptView(text: text, showActions: false).cardStyle()
+        case .result(let text, let title):
+            ResultView(text: text, title: title, model: model)
         }
     }
 }
@@ -643,65 +654,102 @@ struct SummarizingView: View {
     }
 }
 
-struct TranscriptView: View {
+struct ResultView: View {
     let text: String
-    let showActions: Bool
-    @ObservedObject private var config = ConfigManager.shared
+    let title: String
+    @ObservedObject var model: WaveformModel
+    private static let accentColor = Color(red: 0.369, green: 0.361, blue: 0.902) // #5e5ce6
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                Text(title)
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(.white)
+                    .tracking(-0.2)
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .background(Color.white.opacity(0.05))
+
+            Rectangle()
+                .fill(Color.white.opacity(0.1))
+                .frame(height: 1)
+
+            // Scrollable content
             ScrollView(.vertical) {
                 Text(text)
-                    .font(.system(size: 13))
-                    .foregroundColor(.white)
+                    .font(.system(size: 14))
+                    .foregroundColor(.white.opacity(0.9))
+                    .lineSpacing(4)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.leading, 16)
-                    .padding(.trailing, 24) // leave room for scrollbar
+                    .padding(.horizontal, 16)
+                    .padding(.trailing, 8) // scrollbar clearance
                     .padding(.vertical, 16)
                     .textSelection(.enabled)
             }
             .scrollIndicators(.visible)
             .frame(maxHeight: .infinity)
 
-            Divider().background(Color.white.opacity(0.15))
+            Rectangle()
+                .fill(Color.white.opacity(0.1))
+                .frame(height: 1)
 
+            // Footer
             HStack {
-                Text(showActions ? "Transcript" : "Result")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.white.opacity(0.6))
-                Spacer()
-                HStack(spacing: 8) {
-                    KeyHint(key: config.discardBinding.displayString,  label: "Discard")
-                    KeyHint(key: config.copyBinding.displayString,     label: "Copy")
-                    if showActions {
-                        KeyHint(key: config.summarizeBinding.displayString, label: "Summarize")
-                        KeyHint(key: config.feedbackBinding.displayString,  label: "Feedback")
+                Button { model.onDiscardTapped?() } label: {
+                    HStack(spacing: 6) {
+                        Text("⎋")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.white.opacity(0.7))
+                            .frame(width: 20, height: 20)
+                            .background(Color.white.opacity(0.08))
+                            .cornerRadius(4)
+                        Text("Discard")
+                            .font(.system(size: 13))
+                            .foregroundColor(.white.opacity(0.6))
                     }
                 }
+                .buttonStyle(.plain)
+
+                Spacer()
+
+                Button { model.onCopyTapped?() } label: {
+                    HStack(spacing: 8) {
+                        Text("Copy Results")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text("↵")
+                            .font(.system(size: 10, weight: .bold))
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 3)
+                            .background(Color.white.opacity(0.2))
+                            .cornerRadius(4)
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(Self.accentColor)
+                    .cornerRadius(8)
+                }
+                .buttonStyle(.plain)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
+            .background(Color.black.opacity(0.2))
         }
-    }
-}
-
-struct KeyHint: View {
-    let key: String
-    let label: String
-
-    var body: some View {
-        HStack(spacing: 4) {
-            Text(key)
-                .font(.system(size: 11, weight: .medium, design: .rounded))
-                .foregroundColor(.white.opacity(0.9))
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(Color.white.opacity(0.15))
-                .cornerRadius(4)
-            Text(label)
-                .font(.system(size: 12))
-                .foregroundColor(.white.opacity(0.7))
-        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(.ultraThinMaterial)
+                .environment(\.colorScheme, .dark)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 }
 

@@ -292,7 +292,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task {
             let summary = await runLLM(transcript: transcript, prompt: prompt, provider: provider)
             let result  = summary ?? "(summarization failed)"
-            overlay.transitionTo(.result(result))
+            overlay.transitionTo(.result(result, title: "Summary"))
             appPhase = .done
             recordingMenuItem.title = "Start Recording"
         }
@@ -311,7 +311,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task {
             let result  = await runLLM(transcript: transcript, prompt: prompt, provider: provider)
             let display = result ?? "(feedback failed)"
-            overlay.transitionTo(.result(display))
+            overlay.transitionTo(.result(display, title: "Meeting Feedback"))
             appPhase = .done
             recordingMenuItem.title = "Start Recording"
         }
