@@ -62,22 +62,24 @@ final class OverlayWindow {
         secondsTimer = nil
         audioServiceRef = nil
 
+        // Set phase first so SwiftUI layout reflects new content before autoFit measurement
+        waveformModel.phase = phase
+
         switch phase {
         case .done(let text), .result(let text):
             pendingTranscript = text
             resizePanel(width: 480, height: 380)
-            // Activate app so the panel can receive key events
             NSApp.activate(ignoringOtherApps: true)
             panel?.makeKeyAndOrderFront(nil)
             installKeyMonitor()
+        case .transcribing:
+            resizePanel(width: 400, height: 60, autoFit: true)
         case .summarizing:
             removeKeyMonitor()
             resizePanel(width: 480, height: 160)
         default:
             resizePanel(width: 480, height: 160)
         }
-
-        waveformModel.phase = phase
     }
 
     func hide() {
@@ -175,11 +177,19 @@ final class OverlayWindow {
         self.panel = panel
     }
 
-    private func resizePanel(width: CGFloat, height: CGFloat) {
+    private func resizePanel(width: CGFloat, height: CGFloat, autoFit: Bool = false) {
         guard let panel else { return }
-        panel.contentView?.frame = NSRect(x: 0, y: 0, width: width, height: height)
-        positionPanel(panel, width: width, height: height)
-        panel.setContentSize(NSSize(width: width, height: height))
+        var panelWidth = width
+        var panelHeight = height
+        if autoFit, let contentView = panel.contentView {
+            contentView.frame = NSRect(x: 0, y: 0, width: 800, height: 200)
+            let fit = contentView.fittingSize
+            if fit.width > 0 { panelWidth = ceil(fit.width) }
+            if fit.height > 0 { panelHeight = ceil(fit.height) }
+        }
+        panel.contentView?.frame = NSRect(x: 0, y: 0, width: panelWidth, height: panelHeight)
+        positionPanel(panel, width: panelWidth, height: panelHeight)
+        panel.setContentSize(NSSize(width: panelWidth, height: panelHeight))
     }
 
     private func positionPanel(_ panel: NSPanel, width: CGFloat, height: CGFloat) {
@@ -243,7 +253,7 @@ struct OverlayContentView: View {
         case .recording:
             RecordingView(model: model)
         case .transcribing:
-            TranscribingView().cardStyle()
+            TranscribingView()
         case .done(let text):
             TranscriptView(text: text, showActions: true).cardStyle()
         case .summarizing:
@@ -338,17 +348,81 @@ struct RecordingView: View {
 }
 
 struct TranscribingView: View {
+    @State private var shimmerOffset: CGFloat = -1.0
+    @State private var pulseOpacity: Double = 1.0
+    @State private var dotPulsing = false
+    private static let accentColor = Color(red: 0.369, green: 0.361, blue: 0.902) // #5e5ce6
+    private static let trackWidth: CGFloat = 80
+
     var body: some View {
-        VStack(spacing: 14) {
-            ProgressView()
-                .progressViewStyle(.circular)
-                .controlSize(.large)
-                .tint(.white)
-            Text("Transcribing…")
-                .font(.system(size: 14, weight: .medium))
+        HStack(spacing: 0) {
+            // Pulsing indigo dot
+            ZStack {
+                Circle()
+                    .fill(Self.accentColor.opacity(0.35))
+                    .frame(width: 10, height: 10)
+                    .scaleEffect(dotPulsing ? 2.2 : 1.0)
+                    .opacity(dotPulsing ? 0 : 0.35)
+                    .animation(.easeOut(duration: 1.2).repeatForever(autoreverses: false), value: dotPulsing)
+                Circle()
+                    .fill(Self.accentColor)
+                    .frame(width: 10, height: 10)
+                    .shadow(color: Self.accentColor.opacity(0.5), radius: 6)
+            }
+            .padding(.leading, 20)
+
+            Text("TRANSCRIBING...")
+                .font(.system(size: 11, weight: .bold))
                 .foregroundColor(.white)
+                .opacity(pulseOpacity)
+                .padding(.leading, 10)
+
+            Rectangle()
+                .fill(Color.white.opacity(0.1))
+                .frame(width: 1, height: 16)
+                .padding(.horizontal, 16)
+
+            // Indeterminate shimmer bar
+            Capsule()
+                .fill(Color.white.opacity(0.08))
+                .frame(width: Self.trackWidth, height: 4)
+                .overlay(
+                    Capsule()
+                        .fill(
+                            LinearGradient(
+                                colors: [.clear, Self.accentColor, .clear],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .frame(width: Self.trackWidth * 0.5)
+                        .offset(x: shimmerOffset * Self.trackWidth)
+                )
+                .clipped()
+            .padding(.trailing, 20)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(height: 44)
+        .background(
+            Capsule()
+                .fill(.ultraThinMaterial)
+                .environment(\.colorScheme, .dark)
+        )
+        .overlay(
+            Capsule()
+                .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
+        )
+        .padding(.horizontal, 8)
+        .padding(.vertical, 8)
+        .fixedSize(horizontal: true, vertical: false)
+        .onAppear {
+            dotPulsing = true
+            withAnimation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true)) {
+                pulseOpacity = 0.5
+            }
+            withAnimation(.linear(duration: 1.4).repeatForever(autoreverses: false)) {
+                shimmerOffset = 1.0
+            }
+        }
     }
 }
 
