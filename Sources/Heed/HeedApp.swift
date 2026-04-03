@@ -29,6 +29,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusItem()
         requestPermissionsUpfront()
         setupGlobalShortcut()
+        overlay.onStopRecording = { [weak self] in
+            self?.toggleRecording()
+        }
         overlay.onDismiss = { [weak self] in
             self?.appPhase = .idle
             self?.recordingMenuItem.title = "Start Recording"
