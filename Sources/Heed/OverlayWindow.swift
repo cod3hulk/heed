@@ -37,7 +37,7 @@ final class OverlayWindow {
         systemAudioRef = systemAudio
         waveformModel.phase = .recording
 
-        makePanel(width: 500, height: 60, autoFit: true)
+        makePanel(width: 800, height: 60)
 
         let levelTimer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
@@ -84,7 +84,7 @@ final class OverlayWindow {
                 self?.hide()
                 self?.onDismiss?()
             }
-            resizePanel(width: 600, height: 60, autoFit: true)
+            resizePanel(width: 800, height: 60)
             NSApp.activate(ignoringOtherApps: true)
             panel?.makeKeyAndOrderFront(nil)
             installKeyMonitor()
@@ -106,10 +106,10 @@ final class OverlayWindow {
             panel?.makeKeyAndOrderFront(nil)
             installKeyMonitor()
         case .transcribing:
-            resizePanel(width: 400, height: 60, autoFit: true)
+            resizePanel(width: 800, height: 60)
         case .summarizing:
             removeKeyMonitor()
-            resizePanel(width: 400, height: 60, autoFit: true)
+            resizePanel(width: 800, height: 60)
         default:
             resizePanel(width: 480, height: 160)
         }
@@ -223,16 +223,14 @@ final class OverlayWindow {
         }
         panel.contentView?.frame = NSRect(x: 0, y: 0, width: panelWidth, height: panelHeight)
         positionPanel(panel, width: panelWidth, height: panelHeight)
-        panel.setContentSize(NSSize(width: panelWidth, height: panelHeight))
     }
 
     private func positionPanel(_ panel: NSPanel, width: CGFloat, height: CGFloat) {
-        if let screen = NSScreen.main {
-            let screenFrame = screen.visibleFrame
-            let x = screenFrame.midX - width / 2
-            let y = screenFrame.maxY - height - 20
-            panel.setFrameOrigin(NSPoint(x: x, y: y))
-        }
+        guard let screen = NSScreen.main else { return }
+        let screenFrame = screen.visibleFrame
+        let x = screenFrame.midX - width / 2
+        let y = screenFrame.maxY - screenFrame.height / 4 - height / 2
+        panel.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
     }
 }
 
@@ -291,18 +289,21 @@ struct OverlayContentView: View {
     @ObservedObject var model: WaveformModel
 
     var body: some View {
-        switch model.phase {
-        case .recording:
-            RecordingView(model: model)
-        case .transcribing:
-            TranscribingView()
-        case .done(_):
-            TranscriptionReadyView(model: model)
-        case .summarizing:
-            SummarizingView()
-        case .result(let text, let title):
-            ResultView(text: text, title: title, model: model)
+        ZStack {
+            switch model.phase {
+            case .recording:
+                RecordingView(model: model)
+            case .transcribing:
+                TranscribingView()
+            case .done(_):
+                TranscriptionReadyView(model: model)
+            case .summarizing:
+                SummarizingView()
+            case .result(let text, let title):
+                ResultView(text: text, title: title, model: model)
+            }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
