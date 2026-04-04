@@ -13,7 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var recordingMenuItem: NSMenuItem!
     private lazy var settingsWindowController = SettingsWindowController()
 
-    private enum AppPhase { case idle, recording, transcribing, done, summarizing }
+    private enum AppPhase { case idle, recording, transcribing, done, processing }
     private var appPhase: AppPhase = .idle
     private var pendingTranscript = ""
 
@@ -29,6 +29,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusItem()
         requestPermissionsUpfront()
         setupGlobalShortcut()
+        overlay.onStopRecording = { [weak self] in
+            self?.toggleRecording()
+        }
         overlay.onDismiss = { [weak self] in
             self?.appPhase = .idle
             self?.recordingMenuItem.title = "Start Recording"
@@ -182,7 +185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             startRecording()
         case .recording:
             stopRecordingAndTranscribe()
-        case .transcribing, .summarizing:
+        case .transcribing, .processing:
             break // ignore presses while processing
         case .done:
             overlay.hide()
@@ -201,7 +204,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     print("System audio capture unavailable: \(error) — mic only")
                 }
             }
-            overlay.show(audioService: audioService)
+            overlay.show(audioService: audioService, systemAudio: systemAudio)
             recordingMenuItem.title = "Stop Recording"
             appPhase = .recording
         } catch {
@@ -277,9 +280,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startSummarization() {
         guard appPhase == .done, !pendingTranscript.isEmpty else { return }
-        appPhase = .summarizing
+        appPhase = .processing
         recordingMenuItem.title = "Summarizing…"
-        overlay.transitionTo(.summarizing)
+        overlay.transitionTo(.processing(label: "SUMMARIZING"))
 
         // Capture all config synchronously on the main actor before entering the Task.
         let transcript = pendingTranscript
@@ -289,7 +292,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task {
             let summary = await runLLM(transcript: transcript, prompt: prompt, provider: provider)
             let result  = summary ?? "(summarization failed)"
-            overlay.transitionTo(.result(result))
+            overlay.transitionTo(.result(result, title: "Summary"))
             appPhase = .done
             recordingMenuItem.title = "Start Recording"
         }
@@ -297,9 +300,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startMeetingFeedback() {
         guard appPhase == .done, !pendingTranscript.isEmpty else { return }
-        appPhase = .summarizing
+        appPhase = .processing
         recordingMenuItem.title = "Analyzing…"
-        overlay.transitionTo(.summarizing)
+        overlay.transitionTo(.processing(label: "ANALYZING"))
 
         let transcript = pendingTranscript
         let prompt     = ConfigManager.shared.feedbackPrompt
@@ -308,7 +311,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task {
             let result  = await runLLM(transcript: transcript, prompt: prompt, provider: provider)
             let display = result ?? "(feedback failed)"
-            overlay.transitionTo(.result(display))
+            overlay.transitionTo(.result(display, title: "Meeting Feedback"))
             appPhase = .done
             recordingMenuItem.title = "Start Recording"
         }
