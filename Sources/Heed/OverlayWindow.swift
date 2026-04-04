@@ -1,5 +1,10 @@
 import AppKit
+import Carbon.HIToolbox
 import SwiftUI
+
+// Module-level globals for overlay Carbon hotkey dispatch (same pattern as GlobalShortcutManager)
+private var overlayHotKeyActions: [UInt32: () -> Void] = [:]
+private var overlayHotKeyHandlerRef: EventHandlerRef?
 
 enum OverlayPhase {
     case recording
@@ -18,6 +23,7 @@ final class OverlayWindow {
     private var levelTimer: Timer?
     private var secondsTimer: Timer?
     private var keyMonitor: Any?
+    private var overlayHotKeyRefs: [EventHotKeyRef] = []
     private var pendingTranscript: String = ""
 
     /// Called when the stop button is tapped during recording.
@@ -85,8 +91,7 @@ final class OverlayWindow {
                 self?.onDismiss?()
             }
             resizePanel(width: 800, height: 60)
-            NSApp.activate(ignoringOtherApps: true)
-            panel?.makeKeyAndOrderFront(nil)
+            panel?.orderFrontRegardless()
             installKeyMonitor()
         case .result(let text, _):
             pendingTranscript = text
@@ -102,8 +107,7 @@ final class OverlayWindow {
                 self?.onDismiss?()
             }
             resizePanel(width: 480, height: 440)
-            NSApp.activate(ignoringOtherApps: true)
-            panel?.makeKeyAndOrderFront(nil)
+            panel?.orderFrontRegardless()
             installKeyMonitor()
         case .transcribing:
             resizePanel(width: 800, height: 60)
@@ -132,42 +136,110 @@ final class OverlayWindow {
     // MARK: - Key handling
 
     private func installKeyMonitor() {
+        installCarbonHotKeys()
+
+        // Local monitor: supplementary — fires only if Heed is key, also
+        // returns nil to consume matching events so they don't reach other responders.
         let cfg = ConfigManager.shared
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self else { return event }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             func matches(_ binding: KeyBinding) -> Bool {
                 event.keyCode == binding.keyCode && flags.rawValue == binding.modifierFlags
             }
-            if matches(cfg.discardBinding) {
-                self.hide()
-                self.onDismiss?()
-                return nil
-            }
-            if matches(cfg.copyBinding) {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(self.pendingTranscript, forType: .string)
-                self.hide()
-                self.onDismiss?()
-                return nil
-            }
-            if matches(cfg.summarizeBinding) {
-                self.onSummarize?()
-                return nil
-            }
-            if matches(cfg.feedbackBinding) {
-                self.onMeetingFeedback?()
-                return nil
+            if matches(cfg.discardBinding) || matches(cfg.copyBinding) ||
+               matches(cfg.summarizeBinding) || matches(cfg.feedbackBinding) {
+                return nil  // consumed; Carbon hotkey already dispatched the action
             }
             return event
         }
     }
 
     private func removeKeyMonitor() {
+        removeCarbonHotKeys()
         if let monitor = keyMonitor {
             NSEvent.removeMonitor(monitor)
             keyMonitor = nil
         }
+    }
+
+    // MARK: - Carbon hotkeys (global — work regardless of which app is frontmost)
+
+    private func installCarbonHotKeys() {
+        // Install the handler once; reuse across show/hide cycles.
+        if overlayHotKeyHandlerRef == nil {
+            var eventType = EventTypeSpec(
+                eventClass: OSType(kEventClassKeyboard),
+                eventKind: UInt32(kEventHotKeyPressed)
+            )
+            let handler: EventHandlerUPP = { _, event, _ -> OSStatus in
+                var hkID = EventHotKeyID()
+                GetEventParameter(
+                    event,
+                    EventParamName(kEventParamDirectObject),
+                    EventParamType(typeEventHotKeyID),
+                    nil,
+                    MemoryLayout<EventHotKeyID>.size,
+                    nil,
+                    &hkID
+                )
+                Task { @MainActor in overlayHotKeyActions[hkID.id]?() }
+                return noErr
+            }
+            InstallEventHandler(
+                GetApplicationEventTarget(),
+                handler,
+                1,
+                &eventType,
+                nil,
+                &overlayHotKeyHandlerRef
+            )
+        }
+
+        let cfg = ConfigManager.shared
+        let bindings: [(KeyBinding, UInt32, () -> Void)] = [
+            (cfg.discardBinding,   10, { [weak self] in self?.hide(); self?.onDismiss?() }),
+            (cfg.copyBinding,      11, { [weak self] in
+                guard let self else { return }
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(self.pendingTranscript, forType: .string)
+                self.hide()
+                self.onDismiss?()
+            }),
+            (cfg.summarizeBinding, 12, { [weak self] in self?.onSummarize?() }),
+            (cfg.feedbackBinding,  13, { [weak self] in self?.onMeetingFeedback?() }),
+        ]
+
+        for (binding, id, action) in bindings {
+            overlayHotKeyActions[id] = action
+            let hkID = EventHotKeyID(signature: OSType(0x4F564C59), id: id) // "OVLY"
+            var ref: EventHotKeyRef?
+            RegisterEventHotKey(
+                UInt32(binding.keyCode),
+                carbonModifiers(from: binding.modifierFlags),
+                hkID,
+                GetApplicationEventTarget(),
+                0,
+                &ref
+            )
+            if let ref { overlayHotKeyRefs.append(ref) }
+        }
+    }
+
+    private func removeCarbonHotKeys() {
+        for ref in overlayHotKeyRefs { UnregisterEventHotKey(ref) }
+        overlayHotKeyRefs.removeAll()
+        overlayHotKeyActions.removeAll()
+        // Leave handler installed — harmless with no registered hotkeys.
+    }
+
+    private func carbonModifiers(from nsFlags: UInt) -> UInt32 {
+        let flags = NSEvent.ModifierFlags(rawValue: nsFlags)
+        var mods: UInt32 = 0
+        if flags.contains(.command) { mods |= UInt32(cmdKey) }
+        if flags.contains(.shift)   { mods |= UInt32(shiftKey) }
+        if flags.contains(.option)  { mods |= UInt32(optionKey) }
+        if flags.contains(.control) { mods |= UInt32(controlKey) }
+        return mods
     }
 
     var isVisible: Bool { panel != nil }
