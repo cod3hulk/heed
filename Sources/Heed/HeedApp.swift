@@ -13,7 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var recordingMenuItem: NSMenuItem!
     private lazy var settingsWindowController = SettingsWindowController()
 
-    private enum AppPhase { case idle, recording, transcribing, done, summarizing }
+    private enum AppPhase { case idle, recording, transcribing, done, processing }
     private var appPhase: AppPhase = .idle
     private var pendingTranscript = ""
 
@@ -185,7 +185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             startRecording()
         case .recording:
             stopRecordingAndTranscribe()
-        case .transcribing, .summarizing:
+        case .transcribing, .processing:
             break // ignore presses while processing
         case .done:
             overlay.hide()
@@ -280,9 +280,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startSummarization() {
         guard appPhase == .done, !pendingTranscript.isEmpty else { return }
-        appPhase = .summarizing
+        appPhase = .processing
         recordingMenuItem.title = "Summarizing…"
-        overlay.transitionTo(.summarizing)
+        overlay.transitionTo(.processing(label: "SUMMARIZING"))
 
         // Capture all config synchronously on the main actor before entering the Task.
         let transcript = pendingTranscript
@@ -300,9 +300,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startMeetingFeedback() {
         guard appPhase == .done, !pendingTranscript.isEmpty else { return }
-        appPhase = .summarizing
+        appPhase = .processing
         recordingMenuItem.title = "Analyzing…"
-        overlay.transitionTo(.summarizing)
+        overlay.transitionTo(.processing(label: "ANALYZING"))
 
         let transcript = pendingTranscript
         let prompt     = ConfigManager.shared.feedbackPrompt

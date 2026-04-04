@@ -5,7 +5,7 @@ enum OverlayPhase {
     case recording
     case transcribing
     case done(String)      // initial transcript — shows ⌘1/⌘2 action hints
-    case summarizing
+    case processing(label: String)
     case result(String, title: String)    // summary/feedback result — shows only ⎋/↵
 }
 
@@ -107,7 +107,7 @@ final class OverlayWindow {
             installKeyMonitor()
         case .transcribing:
             resizePanel(width: 800, height: 60)
-        case .summarizing:
+        case .processing:
             removeKeyMonitor()
             resizePanel(width: 800, height: 60)
         default:
@@ -297,8 +297,8 @@ struct OverlayContentView: View {
                 TranscribingView()
             case .done(_):
                 TranscriptionReadyView(model: model)
-            case .summarizing:
-                SummarizingView()
+            case .processing(let label):
+                ProcessingView(label: label)
             case .result(let text, let title):
                 ResultView(text: text, title: title, model: model)
             }
@@ -578,7 +578,8 @@ struct ActionChip: View {
     }
 }
 
-struct SummarizingView: View {
+struct ProcessingView: View {
+    let label: String
     @State private var shimmerOffset: CGFloat = -1.0
     @State private var pulseOpacity: Double = 1.0
     @State private var dotPulsing = false
@@ -601,7 +602,7 @@ struct SummarizingView: View {
             }
             .padding(.leading, 20)
 
-            Text("SUMMARIZING...")
+            Text("\(label)...")
                 .font(.system(size: 11, weight: .bold))
                 .foregroundColor(.white)
                 .opacity(pulseOpacity)
