@@ -9,9 +9,14 @@ final class SystemAudioCollector: NSObject, SCStreamOutput, @unchecked Sendable 
     private let lock = OSAllocatedUnfairLock()
     private var samples: [Float] = []
     private var _level: Float = 0
+    private var _sampleRate: Double = 48000
 
     var level: Float {
         lock.withLock { _level }
+    }
+
+    var sampleRate: Double {
+        lock.withLock { _sampleRate }
     }
 
     func stream(_ stream: SCStream,
@@ -71,8 +76,10 @@ final class SystemAudioCollector: NSObject, SCStreamOutput, @unchecked Sendable 
             }
         }
 
+        let actualRate = asbd.mSampleRate
         let captured = mono
         lock.withLock {
+            if _sampleRate != actualRate && actualRate > 0 { _sampleRate = actualRate }
             samples.append(contentsOf: captured)
             if !captured.isEmpty {
                 var sum: Float = 0
@@ -91,17 +98,30 @@ final class SystemAudioCollector: NSObject, SCStreamOutput, @unchecked Sendable 
     }
 
     func reset() {
-        lock.withLock { samples = []; _level = 0 }
+        lock.withLock { samples = []; _level = 0; _sampleRate = 48000 }
     }
 }
 
 // MARK: - System Audio Capture
 
 @MainActor
-final class SystemAudioCapture {
+final class SystemAudioCapture: NSObject, SCStreamDelegate {
     private var stream: SCStream?
     private let collector = SystemAudioCollector()
-    private var capturedSampleRate: Double = 48000
+
+    /// Called on the main actor when the stream stops unexpectedly (e.g., permission revoked).
+    var onError: ((Error) -> Void)?
+
+    // MARK: - SCStreamDelegate
+
+    nonisolated func stream(_ stream: SCStream, didStopWithError error: Error) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.stream = nil
+            print("System audio stream stopped with error: \(error)")
+            self.onError?(error)
+        }
+    }
 
     // MARK: - Public API
 
@@ -127,20 +147,23 @@ final class SystemAudioCapture {
         let config = SCStreamConfiguration()
         config.capturesAudio = true
         config.excludesCurrentProcessAudio = true
+        // Explicitly request 48kHz stereo — without this macOS may pick the
+        // system output device's native rate (44100, 96000, …) and our
+        // resampler would use the wrong ratio.
+        config.sampleRate = 48000
+        config.channelCount = 2
         // Minimise video overhead — 2×2 is the smallest allowed
         config.width = 2
         config.height = 2
         config.minimumFrameInterval = CMTime(value: 1, timescale: 1) // 1 fps
         config.showsCursor = false
 
-        // SCStream delivers audio at its native rate (usually 48kHz)
-        capturedSampleRate = 48000
-
-        let scStream = SCStream(filter: filter, configuration: config, delegate: nil)
+        let scStream = SCStream(filter: filter, configuration: config, delegate: self)
         try scStream.addStreamOutput(collector, type: .audio, sampleHandlerQueue: .global(qos: .userInteractive))
-        try await scStream.startCapture()
-
+        // Assign stream BEFORE awaiting startCapture so stopCapture() can clean up
+        // even if called concurrently during the async startup.
         self.stream = scStream
+        try await scStream.startCapture()
         print("System audio capture started")
     }
 
@@ -155,7 +178,7 @@ final class SystemAudioCapture {
         return raw
     }
 
-    var nativeSampleRate: Double { capturedSampleRate }
+    var nativeSampleRate: Double { collector.sampleRate }
 }
 
 enum SystemAudioError: Error {

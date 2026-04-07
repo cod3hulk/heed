@@ -128,16 +128,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             break
         }
 
-        // Warm up ScreenCaptureKit permission — triggers the system consent dialog
-        // if not yet granted, so the user sees it at launch rather than mid-recording.
-        Task {
-            do {
-                _ = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
-                print("Screen capture permission granted")
-            } catch {
-                print("Screen capture permission not available: \(error)")
-            }
-        }
+        // Screen recording permission is requested naturally when the user starts
+        // recording (startCapture calls SCShareableContent at that point). We don't
+        // pre-warm it here because that caused a spurious picker at launch — before
+        // the user is about to record — and the macOS 14+ privacy picker has a
+        // "Capture system audio" toggle that defaults to OFF. Showing it at the
+        // right moment (when recording starts) makes it clearer what to enable.
     }
 
     private func saveWAV(samples: [Float], sampleRate: Int, to url: URL) {
@@ -197,11 +193,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func startRecording() {
         do {
             try audioService.startRecording()
+            systemAudio.onError = { [weak self] error in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    print("System audio error: \(error)")
+                    self.openScreenRecordingSettings()
+                }
+            }
             Task {
                 do {
                     try await systemAudio.startCapture()
                 } catch {
                     print("System audio capture unavailable: \(error) — mic only")
+                    openScreenRecordingSettings()
                 }
             }
             overlay.show(audioService: audioService, systemAudio: systemAudio)
@@ -212,6 +216,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func openScreenRecordingSettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    private func warnSystemAudioNotCaptured() {
+        let alert = NSAlert()
+        alert.messageText = "System audio not captured"
+        alert.informativeText = """
+            When the permission dialog appeared, the "Also capture audio from this Mac" toggle \
+            must be enabled. Start a new recording — when the dialog appears, turn on that toggle \
+            before clicking Continue.
+            """
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
     private func stopRecordingAndTranscribe() {
         let micSamples = audioService.stopRecording()
         appPhase = .transcribing
@@ -220,6 +243,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         Task {
             let sysSamples16k = await stopAndResampleSystemAudio()
+            if sysSamples16k.isEmpty {
+                warnSystemAudioNotCaptured()
+            }
             let mixed = mixAudio(mic: micSamples, system: sysSamples16k)
 
             let supportDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
