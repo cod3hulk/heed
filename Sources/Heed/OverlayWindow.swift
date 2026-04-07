@@ -90,7 +90,7 @@ final class OverlayWindow {
                 self?.hide()
                 self?.onDismiss?()
             }
-            resizePanel(width: 800, height: 60)
+            resizePanel(width: 480, height: 440)
             panel?.orderFrontRegardless()
             installKeyMonitor()
         case .result(let text, _):
@@ -367,8 +367,8 @@ struct OverlayContentView: View {
                 RecordingView(model: model)
             case .transcribing:
                 TranscribingView()
-            case .done(_):
-                TranscriptionReadyView(model: model)
+            case .done(let text):
+                TranscriptionReadyView(model: model, transcript: text)
             case .processing(let label):
                 ProcessingView(label: label)
             case .result(let text, let title):
@@ -543,12 +543,13 @@ struct TranscribingView: View {
 
 struct TranscriptionReadyView: View {
     @ObservedObject var model: WaveformModel
+    let transcript: String
     @State private var dotPulsing = false
     private static let accentColor = Color(red: 0.369, green: 0.361, blue: 0.902) // #5e5ce6
 
     var body: some View {
-        HStack(spacing: 0) {
-            // Status indicator: pulsing dot + label
+        VStack(spacing: 0) {
+            // Header
             HStack(spacing: 10) {
                 ZStack {
                     Circle()
@@ -566,56 +567,87 @@ struct TranscriptionReadyView: View {
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(.white)
                     .tracking(0.5)
+                Spacer()
+                Button { model.onDiscardTapped?() } label: {
+                    ZStack {
+                        Circle()
+                            .fill(Color.white.opacity(0.1))
+                            .frame(width: 24, height: 24)
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.5))
+                    }
+                }
+                .buttonStyle(.plain)
             }
-            .padding(.leading, 20)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .background(Color.white.opacity(0.05))
 
-            pillSeparator.padding(.horizontal, 16)
+            Rectangle()
+                .fill(Color.white.opacity(0.1))
+                .frame(height: 1)
 
-            // Action chips
-            HStack(spacing: 6) {
-                ActionChip(key: "⌘1", label: "Summarize") { model.onSummarizeTapped?() }
-                ActionChip(key: "⌘2", label: "Feedback")  { model.onFeedbackTapped?() }
-                ActionChip(key: "↵",  label: "Copy")      { model.onCopyTapped?() }
-                ActionChip(key: "⎋",  label: "Discard")   { model.onDiscardTapped?() }
+            // Scrollable transcript
+            ScrollView(.vertical) {
+                Text(transcript)
+                    .font(.system(size: 13))
+                    .foregroundColor(.white.opacity(0.85))
+                    .lineSpacing(4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.trailing, 8)
+                    .padding(.vertical, 14)
+                    .textSelection(.enabled)
             }
-            .padding(.trailing, 8)
+            .scrollIndicators(.visible)
+            .frame(maxHeight: .infinity)
 
-            pillSeparator.padding(.horizontal, 12)
+            Rectangle()
+                .fill(Color.white.opacity(0.1))
+                .frame(height: 1)
 
-            // Close button
-            Button { model.onDiscardTapped?() } label: {
-                ZStack {
-                    Circle()
-                        .fill(Color.white.opacity(0.1))
-                        .frame(width: 24, height: 24)
-                    Image(systemName: "xmark")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundColor(.white.opacity(0.5))
+            // Footer actions
+            HStack {
+                Button { model.onDiscardTapped?() } label: {
+                    HStack(spacing: 6) {
+                        Text("⎋")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.white.opacity(0.7))
+                            .frame(width: 20, height: 20)
+                            .background(Color.white.opacity(0.08))
+                            .cornerRadius(4)
+                        Text("Discard")
+                            .font(.system(size: 13))
+                            .foregroundColor(.white.opacity(0.6))
+                    }
+                }
+                .buttonStyle(.plain)
+
+                Spacer()
+
+                HStack(spacing: 8) {
+                    ActionChip(key: "↵",  label: "Copy")      { model.onCopyTapped?() }
+                    ActionChip(key: "⌘2", label: "Feedback")  { model.onFeedbackTapped?() }
+                    ActionChip(key: "⌘1", label: "Summarize") { model.onSummarizeTapped?() }
                 }
             }
-            .buttonStyle(.plain)
-            .padding(.trailing, 16)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(Color.black.opacity(0.2))
         }
-        .frame(height: 44)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(
-            Capsule()
+            RoundedRectangle(cornerRadius: 12)
                 .fill(.ultraThinMaterial)
                 .environment(\.colorScheme, .dark)
         )
         .overlay(
-            Capsule()
+            RoundedRectangle(cornerRadius: 12)
                 .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
         )
-        .padding(.horizontal, 8)
-        .padding(.vertical, 8)
-        .fixedSize(horizontal: true, vertical: false)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
         .onAppear { dotPulsing = true }
-    }
-
-    private var pillSeparator: some View {
-        Rectangle()
-            .fill(Color.white.opacity(0.1))
-            .frame(width: 1, height: 16)
     }
 }
 
