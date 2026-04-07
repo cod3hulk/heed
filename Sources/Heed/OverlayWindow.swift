@@ -171,7 +171,7 @@ final class OverlayWindow {
                 eventClass: OSType(kEventClassKeyboard),
                 eventKind: UInt32(kEventHotKeyPressed)
             )
-            let handler: EventHandlerUPP = { _, event, _ -> OSStatus in
+            let handler: EventHandlerUPP = { callRef, event, _ -> OSStatus in
                 var hkID = EventHotKeyID()
                 GetEventParameter(
                     event,
@@ -182,8 +182,11 @@ final class OverlayWindow {
                     nil,
                     &hkID
                 )
-                Task { @MainActor in overlayHotKeyActions[hkID.id]?() }
-                return noErr
+                if overlayHotKeyActions[hkID.id] != nil {
+                    Task { @MainActor in overlayHotKeyActions[hkID.id]?() }
+                    return noErr
+                }
+                return CallNextEventHandler(callRef, event)
             }
             InstallEventHandler(
                 GetApplicationEventTarget(),
