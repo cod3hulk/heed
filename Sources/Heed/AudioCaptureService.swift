@@ -45,6 +45,9 @@ final class AudioCaptureService {
     private var micEngine: AVAudioEngine?
     let micCollector = AudioSampleCollector()
     private var inputSampleRate: Double = 48000
+    private var configChangeObserver: Any?
+    // Samples already resampled to 16kHz from segments before device changes
+    private var preResampledSamples: [Float] = []
 
     var currentLevel: Float {
         micCollector.level
@@ -56,8 +59,71 @@ final class AudioCaptureService {
 
     func startRecording() throws {
         micCollector.reset()
+        preResampledSamples = []
 
         let engine = AVAudioEngine()
+        installTap(on: engine)
+
+        // When audio hardware changes (AirPods, headphones, USB devices) AVAudioEngine
+        // stops and its tap silently goes dead. Re-establish the tap immediately so
+        // recording continues without dropping samples.
+        configChangeObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.handleEngineConfigurationChange() }
+        }
+
+        engine.prepare()
+        try engine.start()
+        self.micEngine = engine
+    }
+
+    func stopRecording() -> [Float] {
+        if let observer = configChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+            configChangeObserver = nil
+        }
+        micEngine?.inputNode.removeTap(onBus: 0)
+        micEngine?.stop()
+        micEngine = nil
+
+        let rawSamples = micCollector.drain()
+        print("Recording stopped, captured \(rawSamples.count) raw samples at \(inputSampleRate) Hz")
+
+        // Resample to 16kHz on the main thread where it's safe
+        let currentSegment = resampleTo16k(rawSamples, fromRate: inputSampleRate)
+        let allSamples = preResampledSamples + currentSegment
+        preResampledSamples = []
+        return allSamples
+    }
+
+    private func handleEngineConfigurationChange() {
+        guard let engine = micEngine else { return }
+        print("Audio device configuration changed — re-establishing mic tap")
+
+        // Drain and resample whatever was collected before the device change,
+        // so samples collected at the old rate aren't mixed with the new rate.
+        let rawSamples = micCollector.drain()
+        if !rawSamples.isEmpty {
+            let resampled = resampleTo16k(rawSamples, fromRate: inputSampleRate)
+            preResampledSamples.append(contentsOf: resampled)
+        }
+
+        engine.inputNode.removeTap(onBus: 0)
+        installTap(on: engine)
+
+        do {
+            engine.prepare()
+            try engine.start()
+            print("Mic tap restored at \(inputSampleRate) Hz, \(engine.inputNode.outputFormat(forBus: 0).channelCount) ch")
+        } catch {
+            print("Failed to restart audio engine after device change: \(error)")
+        }
+    }
+
+    private func installTap(on engine: AVAudioEngine) {
         let inputNode = engine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)
         inputSampleRate = inputFormat.sampleRate
@@ -89,22 +155,7 @@ final class AudioCaptureService {
             collector.append(monoSamples, updateLevel: true)
         }
 
-        engine.prepare()
-        try engine.start()
-        self.micEngine = engine
         print("Recording started at \(inputFormat.sampleRate) Hz, \(inputFormat.channelCount) ch")
-    }
-
-    func stopRecording() -> [Float] {
-        micEngine?.inputNode.removeTap(onBus: 0)
-        micEngine?.stop()
-        micEngine = nil
-
-        let rawSamples = micCollector.drain()
-        print("Recording stopped, captured \(rawSamples.count) raw samples")
-
-        // Resample to 16kHz on the main thread where it's safe
-        return resampleTo16k(rawSamples, fromRate: inputSampleRate)
     }
 
     /// Simple linear interpolation resampling — no AVAudioConverter needed
