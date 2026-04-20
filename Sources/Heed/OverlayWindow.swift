@@ -11,7 +11,7 @@ enum OverlayPhase {
     case transcribing
     case done(String)      // initial transcript — shows ⌘1/⌘2 action hints
     case processing(label: String)
-    case result(String, title: String)    // summary/feedback result — shows only ⎋/↵
+    case result(String, title: String, hasSummary: Bool, hasFeedback: Bool)
 }
 
 @MainActor
@@ -25,6 +25,9 @@ final class OverlayWindow {
     private var keyMonitor: Any?
     private var overlayHotKeyRefs: [EventHotKeyRef] = []
     private var pendingTranscript: String = ""
+    private var cachedSummary: String? = nil
+    private var cachedFeedback: String? = nil
+    private var originalTranscript: String = ""
 
     /// Called when the stop button is tapped during recording.
     var onStopRecording: (() -> Void)? {
@@ -79,12 +82,11 @@ final class OverlayWindow {
         switch phase {
         case .done(let text):
             pendingTranscript = text
+            originalTranscript = text
             waveformModel.onCopyTapped = { [weak self] in
                 guard let self else { return }
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(self.pendingTranscript, forType: .string)
-                self.hide()
-                self.onDismiss?()
             }
             waveformModel.onDiscardTapped = { [weak self] in
                 self?.hide()
@@ -93,14 +95,18 @@ final class OverlayWindow {
             resizePanel(width: 480, height: 440)
             panel?.orderFrontRegardless()
             installKeyMonitor()
-        case .result(let text, _):
+        case .result(let text, let title, _, _):
             pendingTranscript = text
+            // Cache the result based on title
+            if title == "Summary" {
+                cachedSummary = text
+            } else if title == "Meeting Feedback" {
+                cachedFeedback = text
+            }
             waveformModel.onCopyTapped = { [weak self] in
                 guard let self else { return }
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(self.pendingTranscript, forType: .string)
-                self.hide()
-                self.onDismiss?()
             }
             waveformModel.onDiscardTapped = { [weak self] in
                 self?.hide()
@@ -131,7 +137,14 @@ final class OverlayWindow {
         audioServiceRef = nil
         systemAudioRef = nil
         pendingTranscript = ""
+        cachedSummary = nil
+        cachedFeedback = nil
+        originalTranscript = ""
     }
+
+    func getCachedSummary() -> String? { cachedSummary }
+    func getCachedFeedback() -> String? { cachedFeedback }
+    func getOriginalTranscript() -> String { originalTranscript }
 
     // MARK: - Key handling
 
@@ -205,8 +218,6 @@ final class OverlayWindow {
                 guard let self else { return }
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(self.pendingTranscript, forType: .string)
-                self.hide()
-                self.onDismiss?()
             }),
             (cfg.summarizeBinding, 12, { [weak self] in self?.onSummarize?() }),
             (cfg.feedbackBinding,  13, { [weak self] in self?.onMeetingFeedback?() }),
@@ -351,8 +362,9 @@ final class WaveformModel: ObservableObject {
         animPhase = 0
         elapsedSeconds = 0
         phase = .recording
-        onSummarizeTapped = nil
-        onFeedbackTapped = nil
+        // Keep action callbacks alive for action switching
+        // onSummarizeTapped = nil
+        // onFeedbackTapped = nil
         onCopyTapped = nil
         onDiscardTapped = nil
     }
@@ -374,8 +386,8 @@ struct OverlayContentView: View {
                 TranscriptionReadyView(model: model, transcript: text)
             case .processing(let label):
                 ProcessingView(label: label)
-            case .result(let text, let title):
-                ResultView(text: text, title: title, model: model)
+            case .result(let text, let title, let hasSummary, let hasFeedback):
+                ResultView(text: text, title: title, hasSummary: hasSummary, hasFeedback: hasFeedback, model: model)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -766,6 +778,8 @@ struct ProcessingView: View {
 struct ResultView: View {
     let text: String
     let title: String
+    let hasSummary: Bool
+    let hasFeedback: Bool
     @ObservedObject var model: WaveformModel
     private static let accentColor = Color(red: 0.369, green: 0.361, blue: 0.902) // #5e5ce6
 
@@ -825,24 +839,52 @@ struct ResultView: View {
 
                 Spacer()
 
-                Button { model.onCopyTapped?() } label: {
-                    HStack(spacing: 8) {
-                        Text("Copy Results")
-                            .font(.system(size: 13, weight: .semibold))
-                        Text("↵")
-                            .font(.system(size: 10, weight: .bold))
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 3)
-                            .background(Color.white.opacity(0.2))
-                            .cornerRadius(4)
+                HStack(spacing: 8) {
+                    Button { model.onCopyTapped?() } label: {
+                        HStack(spacing: 8) {
+                            Text("Copy Results")
+                                .font(.system(size: 13, weight: .semibold))
+                            Text("↵")
+                                .font(.system(size: 10, weight: .bold))
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 3)
+                                .background(Color.white.opacity(0.2))
+                                .cornerRadius(4)
+                        }
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(Self.accentColor)
+                        .cornerRadius(8)
                     }
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 7)
-                    .background(Self.accentColor)
-                    .cornerRadius(8)
+                    .buttonStyle(.plain)
+
+                    // Show feedback chip if we're viewing summary
+                    if title == "Summary" {
+                        if hasFeedback {
+                            ActionChip(key: "⌘2", label: "View Feedback") {
+                                model.onFeedbackTapped?()
+                            }
+                        } else {
+                            ActionChip(key: "⌘2", label: "Generate Feedback") {
+                                model.onFeedbackTapped?()
+                            }
+                        }
+                    }
+
+                    // Show summary chip if we're viewing feedback
+                    if title == "Meeting Feedback" {
+                        if hasSummary {
+                            ActionChip(key: "⌘1", label: "View Summary") {
+                                model.onSummarizeTapped?()
+                            }
+                        } else {
+                            ActionChip(key: "⌘1", label: "Generate Summary") {
+                                model.onSummarizeTapped?()
+                            }
+                        }
+                    }
                 }
-                .buttonStyle(.plain)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)

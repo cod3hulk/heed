@@ -306,6 +306,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startSummarization() {
         guard appPhase == .done, !pendingTranscript.isEmpty else { return }
+
+        // Check cache first
+        if let cached = overlay.getCachedSummary() {
+            let hasFeedback = overlay.getCachedFeedback() != nil
+            overlay.transitionTo(.result(cached, title: "Summary", hasSummary: true, hasFeedback: hasFeedback))
+            return
+        }
+
         appPhase = .processing
         recordingMenuItem.title = "Summarizing…"
         overlay.transitionTo(.processing(label: "SUMMARIZING"))
@@ -318,7 +326,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task {
             let summary = await runLLM(transcript: transcript, prompt: prompt, provider: provider)
             let result  = summary ?? "(summarization failed)"
-            overlay.transitionTo(.result(result, title: "Summary"))
+            let hasFeedback = overlay.getCachedFeedback() != nil
+            overlay.transitionTo(.result(result, title: "Summary", hasSummary: true, hasFeedback: hasFeedback))
             appPhase = .done
             recordingMenuItem.title = "Start Recording"
         }
@@ -326,6 +335,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startMeetingFeedback() {
         guard appPhase == .done, !pendingTranscript.isEmpty else { return }
+
+        // Check cache first
+        if let cached = overlay.getCachedFeedback() {
+            let hasSummary = overlay.getCachedSummary() != nil
+            overlay.transitionTo(.result(cached, title: "Meeting Feedback", hasSummary: hasSummary, hasFeedback: true))
+            return
+        }
+
         appPhase = .processing
         recordingMenuItem.title = "Analyzing…"
         overlay.transitionTo(.processing(label: "ANALYZING"))
@@ -337,7 +354,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task {
             let result  = await runLLM(transcript: transcript, prompt: prompt, provider: provider)
             let display = result ?? "(feedback failed)"
-            overlay.transitionTo(.result(display, title: "Meeting Feedback"))
+            let hasSummary = overlay.getCachedSummary() != nil
+            overlay.transitionTo(.result(display, title: "Meeting Feedback", hasSummary: hasSummary, hasFeedback: true))
             appPhase = .done
             recordingMenuItem.title = "Start Recording"
         }
