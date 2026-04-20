@@ -192,6 +192,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startRecording() {
         do {
+            audioService.onRecordingFailed = { [weak self] message in
+                Task { @MainActor [weak self] in
+                    self?.handleRecordingFailure(message: message)
+                }
+            }
             try audioService.startRecording()
             systemAudio.onError = { [weak self] error in
                 Task { @MainActor [weak self] in
@@ -220,6 +225,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    private func handleRecordingFailure(message: String) {
+        overlay.hide()
+        appPhase = .idle
+        recordingMenuItem.title = "Start Recording"
+
+        let alert = NSAlert()
+        alert.messageText = "Recording Stopped"
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     private func warnSystemAudioNotCaptured() {

@@ -3,45 +3,76 @@ import os
 
 /// Thread-safe buffer for collecting audio samples from realtime callbacks
 final class AudioSampleCollector: @unchecked Sendable {
-    private let lock = OSAllocatedUnfairLock()
+    // Separate locks prevent waveform timer (60fps) from blocking on drain()
+    private let sampleLock = OSAllocatedUnfairLock()  // guards samples array
+    private let levelLock = OSAllocatedUnfairLock()   // guards _level value
     private var samples: [Float] = []
     private var _level: Float = 0
 
     var level: Float {
-        lock.withLock { _level }
+        levelLock.withLock { _level }
     }
 
     func append(_ newSamples: [Float], updateLevel: Bool = false) {
-        lock.withLock {
+        // Acquire locks separately to minimize contention
+        sampleLock.withLock {
             samples.append(contentsOf: newSamples)
-            if updateLevel && !newSamples.isEmpty {
-                var sum: Float = 0
-                for s in newSamples { sum += s * s }
-                let rms = sqrtf(sum / Float(newSamples.count))
+        }
+
+        if updateLevel && !newSamples.isEmpty {
+            var sum: Float = 0
+            for s in newSamples { sum += s * s }
+            let rms = sqrtf(sum / Float(newSamples.count))
+
+            levelLock.withLock {
                 _level = min(1.0, rms * 10)
             }
         }
     }
 
     func drain() -> [Float] {
-        lock.withLock {
-            let result = samples
+        let result = sampleLock.withLock {
+            let r = samples
             samples = []
-            _level = 0
-            return result
+            return r
         }
+
+        levelLock.withLock {
+            _level = 0
+        }
+
+        return result
     }
 
     func reset() {
-        lock.withLock {
+        sampleLock.withLock {
             samples = []
+        }
+        levelLock.withLock {
             _level = 0
         }
     }
 }
 
+enum AudioCaptureError: Error {
+    case engineStopped
+    case maxRecoveriesExceeded
+}
+
 @MainActor
 final class AudioCaptureService {
+    private enum EngineState {
+        case stopped
+        case running
+        case restarting
+        case failed(Error)
+
+        var isRunning: Bool {
+            if case .running = self { return true }
+            return false
+        }
+    }
+
     private var micEngine: AVAudioEngine?
     let micCollector = AudioSampleCollector()
     private var inputSampleRate: Double = 48000
@@ -49,17 +80,35 @@ final class AudioCaptureService {
     // Samples already resampled to 16kHz from segments before device changes
     private var preResampledSamples: [Float] = []
 
+    private var engineState: EngineState = .stopped
+    private var recoveryAttempts = 0
+    private let maxRecoveryAttempts = 3
+    private var healthCheckTimer: Timer?
+    var onRecordingFailed: ((String) -> Void)?
+
     var currentLevel: Float {
         micCollector.level
     }
 
     var isRecording: Bool {
-        micEngine != nil
+        switch engineState {
+        case .running, .restarting: return true
+        case .stopped, .failed: return false
+        }
+    }
+
+    var engineHealth: String? {
+        switch engineState {
+        case .restarting: return "Reconnecting audio device..."
+        case .failed(let error): return "Audio unavailable: \(error.localizedDescription)"
+        default: return nil
+        }
     }
 
     func startRecording() throws {
         micCollector.reset()
         preResampledSamples = []
+        engineState = .stopped
 
         let engine = AVAudioEngine()
         installTap(on: engine)
@@ -78,9 +127,23 @@ final class AudioCaptureService {
         engine.prepare()
         try engine.start()
         self.micEngine = engine
+        engineState = .running
+
+        // Health check every 2 seconds to detect silent engine failures
+        healthCheckTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) {
+            [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.checkEngineHealth()
+            }
+        }
     }
 
     func stopRecording() -> [Float] {
+        engineState = .stopped
+
+        healthCheckTimer?.invalidate()
+        healthCheckTimer = nil
+
         if let observer = configChangeObserver {
             NotificationCenter.default.removeObserver(observer)
             configChangeObserver = nil
@@ -117,10 +180,72 @@ final class AudioCaptureService {
         do {
             engine.prepare()
             try engine.start()
+            recoveryAttempts = 0  // Reset on success
             print("Mic tap restored at \(inputSampleRate) Hz, \(engine.inputNode.outputFormat(forBus: 0).channelCount) ch")
         } catch {
             print("Failed to restart audio engine after device change: \(error)")
+            engineState = .failed(error)
+            attemptRecovery()
         }
+    }
+
+    private func checkEngineHealth() {
+        guard let engine = micEngine, engineState.isRunning else { return }
+
+        if !engine.isRunning {
+            print("⚠ Engine stopped unexpectedly")
+            engineState = .failed(AudioCaptureError.engineStopped)
+            attemptRecovery()
+        }
+    }
+
+    private func attemptRecovery() {
+        guard recoveryAttempts < maxRecoveryAttempts else {
+            engineState = .failed(AudioCaptureError.maxRecoveriesExceeded)
+            notifyRecordingFailed()
+            return
+        }
+
+        recoveryAttempts += 1
+        engineState = .restarting
+
+        // Preserve samples collected before failure
+        let rawSamples = micCollector.drain()
+        if !rawSamples.isEmpty {
+            let resampled = resampleTo16k(rawSamples, fromRate: inputSampleRate)
+            preResampledSamples.append(contentsOf: resampled)
+        }
+
+        guard let engine = micEngine else { return }
+
+        engine.inputNode.removeTap(onBus: 0)
+        installTap(on: engine)
+
+        do {
+            engine.prepare()
+            try engine.start()
+            engineState = .running
+            recoveryAttempts = 0
+            print("✓ Audio engine recovered (attempt \(recoveryAttempts))")
+        } catch {
+            print("✗ Recovery attempt \(recoveryAttempts) failed: \(error)")
+
+            // Retry after delay with exponential backoff
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(recoveryAttempts) * 0.5) {
+                [weak self] in self?.attemptRecovery()
+            }
+        }
+    }
+
+    private func notifyRecordingFailed() {
+        let message: String
+        switch engineState {
+        case .failed(let error):
+            message = "Recording stopped: \(error.localizedDescription)"
+        default:
+            message = "Recording stopped due to audio device error"
+        }
+        onRecordingFailed?(message)
     }
 
     private func installTap(on engine: AVAudioEngine) {

@@ -108,6 +108,9 @@ final class SystemAudioCollector: NSObject, SCStreamOutput, @unchecked Sendable 
 final class SystemAudioCapture: NSObject, SCStreamDelegate {
     private var stream: SCStream?
     private let collector = SystemAudioCollector()
+    private var isRecordingSession = false
+    private var restartAttempts = 0
+    private let maxRestartAttempts = 3
 
     /// Called on the main actor when the stream stops unexpectedly (e.g., permission revoked).
     var onError: ((Error) -> Void)?
@@ -119,7 +122,27 @@ final class SystemAudioCapture: NSObject, SCStreamDelegate {
             guard let self else { return }
             self.stream = nil
             print("System audio stream stopped with error: \(error)")
-            self.onError?(error)
+
+            // Auto-restart if we're mid-recording
+            if self.isRecordingSession && self.restartAttempts < self.maxRestartAttempts {
+                self.restartAttempts += 1
+                print("Attempting to restart system audio capture (attempt \(self.restartAttempts))...")
+
+                try? await Task.sleep(nanoseconds: 500_000_000)  // 500ms delay
+
+                do {
+                    try await self.startCapture()
+                    print("✓ System audio restarted")
+                    self.restartAttempts = 0
+                } catch {
+                    print("✗ System audio restart failed: \(error)")
+                    if self.restartAttempts >= self.maxRestartAttempts {
+                        self.onError?(error)
+                    }
+                }
+            } else {
+                self.onError?(error)
+            }
         }
     }
 
@@ -134,6 +157,8 @@ final class SystemAudioCapture: NSObject, SCStreamDelegate {
     func startCapture() async throws {
         guard stream == nil else { return }
         collector.reset()
+        isRecordingSession = true
+        restartAttempts = 0
 
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
 
@@ -171,6 +196,7 @@ final class SystemAudioCapture: NSObject, SCStreamDelegate {
     func stopCapture() async -> [Float] {
         guard let scStream = stream else { return [] }
         self.stream = nil
+        isRecordingSession = false
 
         try? await scStream.stopCapture()
         let raw = collector.drain()
