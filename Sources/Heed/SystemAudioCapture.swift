@@ -6,17 +6,19 @@ import os
 
 /// Receives SCStream callbacks on an arbitrary thread — must be @unchecked Sendable.
 final class SystemAudioCollector: NSObject, SCStreamOutput, @unchecked Sendable {
-    private let lock = OSAllocatedUnfairLock()
+    // Separate locks prevent waveform timer (60fps) from blocking on drain()
+    private let sampleLock = OSAllocatedUnfairLock()
+    private let levelLock = OSAllocatedUnfairLock()
     private var samples: [Float] = []
     private var _level: Float = 0
     private var _sampleRate: Double = 48000
 
     var level: Float {
-        lock.withLock { _level }
+        levelLock.withLock { _level }
     }
 
     var sampleRate: Double {
-        lock.withLock { _sampleRate }
+        sampleLock.withLock { _sampleRate }
     }
 
     func stream(_ stream: SCStream,
@@ -78,27 +80,46 @@ final class SystemAudioCollector: NSObject, SCStreamOutput, @unchecked Sendable 
 
         let actualRate = asbd.mSampleRate
         let captured = mono
-        lock.withLock {
+
+        // Acquire locks separately to minimize contention
+        sampleLock.withLock {
             if _sampleRate != actualRate && actualRate > 0 { _sampleRate = actualRate }
             samples.append(contentsOf: captured)
-            if !captured.isEmpty {
-                var sum: Float = 0
-                for s in captured { sum += s * s }
-                _level = min(1.0, sqrtf(sum / Float(captured.count)) * 10)
+        }
+
+        if !captured.isEmpty {
+            var sum: Float = 0
+            for s in captured { sum += s * s }
+            let rms = min(1.0, sqrtf(sum / Float(captured.count)) * 10)
+
+            levelLock.withLock {
+                _level = rms
             }
         }
     }
 
     func drain() -> [Float] {
-        lock.withLock {
-            let result = samples
+        let result = sampleLock.withLock {
+            let r = samples
             samples = []
-            return result
+            return r
         }
+
+        levelLock.withLock {
+            _level = 0
+        }
+
+        return result
     }
 
     func reset() {
-        lock.withLock { samples = []; _level = 0; _sampleRate = 48000 }
+        sampleLock.withLock {
+            samples = []
+            _sampleRate = 48000
+        }
+        levelLock.withLock {
+            _level = 0
+        }
     }
 }
 
@@ -106,11 +127,26 @@ final class SystemAudioCollector: NSObject, SCStreamOutput, @unchecked Sendable 
 
 @MainActor
 final class SystemAudioCapture: NSObject, SCStreamDelegate {
+    private enum StreamState {
+        case stopped
+        case running
+        case restarting
+        case failed(Error)
+
+        var isRunning: Bool {
+            if case .running = self { return true }
+            return false
+        }
+    }
+
     private var stream: SCStream?
     private let collector = SystemAudioCollector()
-    private var isRecordingSession = false
+    private var streamState: StreamState = .stopped
     private var restartAttempts = 0
     private let maxRestartAttempts = 3
+    private var healthCheckTimer: Timer?
+    // Samples already resampled to 16kHz from segments before stream failures
+    private var preResampledSamples: [Float] = []
 
     /// Called on the main actor when the stream stops unexpectedly (e.g., permission revoked).
     var onError: ((Error) -> Void)?
@@ -120,27 +156,48 @@ final class SystemAudioCapture: NSObject, SCStreamDelegate {
     nonisolated func stream(_ stream: SCStream, didStopWithError error: Error) {
         Task { @MainActor [weak self] in
             guard let self else { return }
+
+            // Check if user explicitly stopped recording (race condition guard)
+            guard case .running = self.streamState else {
+                print("Stream stopped after user explicitly ended recording")
+                return
+            }
+
             self.stream = nil
             print("System audio stream stopped with error: \(error)")
 
             // Auto-restart if we're mid-recording
-            if self.isRecordingSession && self.restartAttempts < self.maxRestartAttempts {
+            if self.restartAttempts < self.maxRestartAttempts {
                 self.restartAttempts += 1
+                self.streamState = .restarting
                 print("Attempting to restart system audio capture (attempt \(self.restartAttempts))...")
 
-                try? await Task.sleep(nanoseconds: 500_000_000)  // 500ms delay
+                // Preserve samples collected before failure
+                let rawSamples = self.collector.drain()
+                if !rawSamples.isEmpty {
+                    let resampled = self.resampleTo16k(rawSamples, fromRate: self.collector.sampleRate)
+                    self.preResampledSamples.append(contentsOf: resampled)
+                    print("Preserved \(rawSamples.count) samples during restart")
+                }
+
+                // Exponential backoff
+                let delay = UInt64(Double(self.restartAttempts) * 0.5 * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: delay)
 
                 do {
                     try await self.startCapture()
                     print("✓ System audio restarted")
                     self.restartAttempts = 0
+                    self.streamState = .running
                 } catch {
                     print("✗ System audio restart failed: \(error)")
                     if self.restartAttempts >= self.maxRestartAttempts {
+                        self.streamState = .failed(error)
                         self.onError?(error)
                     }
                 }
             } else {
+                self.streamState = .failed(error)
                 self.onError?(error)
             }
         }
@@ -148,17 +205,36 @@ final class SystemAudioCapture: NSObject, SCStreamDelegate {
 
     // MARK: - Public API
 
-    var isCapturing: Bool { stream != nil }
+    var isCapturing: Bool {
+        switch streamState {
+        case .running, .restarting: return true
+        case .stopped, .failed: return false
+        }
+    }
 
     var currentLevel: Float { collector.level }
+
+    var streamHealth: String? {
+        switch streamState {
+        case .restarting: return "Reconnecting system audio..."
+        case .failed(let error): return "System audio unavailable: \(error.localizedDescription)"
+        default: return nil
+        }
+    }
 
     /// Start capturing all system audio (excludes this process's own audio output).
     /// Throws if ScreenCaptureKit is unavailable or permission is denied.
     func startCapture() async throws {
         guard stream == nil else { return }
-        collector.reset()
-        isRecordingSession = true
-        restartAttempts = 0
+
+        // Only reset on user-initiated start, not on auto-restart
+        if case .stopped = streamState {
+            collector.reset()
+            preResampledSamples = []
+            restartAttempts = 0
+        }
+
+        streamState = .running
 
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
 
@@ -190,23 +266,128 @@ final class SystemAudioCapture: NSObject, SCStreamDelegate {
         self.stream = scStream
         try await scStream.startCapture()
         print("System audio capture started")
+
+        // Health check every 2 seconds to detect silent stream failures
+        healthCheckTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) {
+            [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.checkStreamHealth()
+            }
+        }
     }
 
-    /// Stop capturing and return raw samples at the captured sample rate.
+    private func checkStreamHealth() {
+        guard streamState.isRunning else { return }
+
+        // SCStream doesn't expose isRunning, but we can detect if it's been set to nil
+        // while we think we're still running
+        if stream == nil {
+            print("⚠ Stream stopped unexpectedly without error callback")
+            streamState = .failed(SystemAudioError.streamStopped)
+            attemptRecovery()
+        }
+    }
+
+    private func attemptRecovery() {
+        guard restartAttempts < maxRestartAttempts else {
+            streamState = .failed(SystemAudioError.maxRecoveriesExceeded)
+            onError?(SystemAudioError.maxRecoveriesExceeded)
+            return
+        }
+
+        restartAttempts += 1
+        streamState = .restarting
+
+        // Preserve samples collected before failure
+        let rawSamples = collector.drain()
+        if !rawSamples.isEmpty {
+            let resampled = resampleTo16k(rawSamples, fromRate: collector.sampleRate)
+            preResampledSamples.append(contentsOf: resampled)
+            print("Preserved \(rawSamples.count) samples during recovery")
+        }
+
+        Task { @MainActor in
+            // Exponential backoff
+            let delay = UInt64(Double(self.restartAttempts) * 0.5 * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: delay)
+
+            do {
+                try await self.startCapture()
+                print("✓ System audio recovered (attempt \(self.restartAttempts))")
+                self.restartAttempts = 0
+                self.streamState = .running
+            } catch {
+                print("✗ Recovery attempt \(self.restartAttempts) failed: \(error)")
+                if self.restartAttempts >= self.maxRestartAttempts {
+                    self.streamState = .failed(error)
+                    self.onError?(error)
+                } else {
+                    self.attemptRecovery()
+                }
+            }
+        }
+    }
+
+    /// Stop capturing and return resampled samples at 16kHz.
     func stopCapture() async -> [Float] {
-        guard let scStream = stream else { return [] }
+        streamState = .stopped
+
+        healthCheckTimer?.invalidate()
+        healthCheckTimer = nil
+
+        guard let scStream = stream else {
+            // Already stopped, just return preserved samples
+            let result = preResampledSamples
+            preResampledSamples = []
+            return result
+        }
         self.stream = nil
-        isRecordingSession = false
 
         try? await scStream.stopCapture()
         let raw = collector.drain()
         print("System audio: captured \(raw.count) raw samples")
-        return raw
+
+        // Resample final segment and combine with preserved samples
+        let finalSegment = resampleTo16k(raw, fromRate: collector.sampleRate)
+        let allSamples = preResampledSamples + finalSegment
+        preResampledSamples = []
+
+        print("System audio: total \(allSamples.count) samples at 16kHz")
+        return allSamples
     }
 
     var nativeSampleRate: Double { collector.sampleRate }
+
+    /// Simple linear interpolation resampling to 16kHz
+    private func resampleTo16k(_ samples: [Float], fromRate: Double) -> [Float] {
+        let targetRate = 16000.0
+        if abs(fromRate - targetRate) < 1.0 {
+            return samples // Already at target rate
+        }
+
+        let ratio = fromRate / targetRate
+        let outputCount = Int(Double(samples.count) / ratio)
+        guard outputCount > 0 else { return [] }
+
+        var output = [Float](repeating: 0, count: outputCount)
+        for i in 0..<outputCount {
+            let srcIndex = Double(i) * ratio
+            let idx = Int(srcIndex)
+            let frac = Float(srcIndex - Double(idx))
+
+            if idx + 1 < samples.count {
+                output[i] = samples[idx] * (1.0 - frac) + samples[idx + 1] * frac
+            } else if idx < samples.count {
+                output[i] = samples[idx]
+            }
+        }
+
+        return output
+    }
 }
 
 enum SystemAudioError: Error {
     case noDisplay
+    case streamStopped
+    case maxRecoveriesExceeded
 }
