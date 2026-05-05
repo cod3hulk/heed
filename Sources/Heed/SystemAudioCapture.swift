@@ -1,5 +1,6 @@
 import ScreenCaptureKit
 import CoreMedia
+import HeedCore
 import os
 
 // MARK: - Stream Output Delegate
@@ -356,33 +357,8 @@ final class SystemAudioCapture: NSObject, SCStreamDelegate {
         return allSamples
     }
 
-    private var nativeSampleRate: Double { collector.sampleRate }
-
-    /// Simple linear interpolation resampling to 16kHz
     private func resampleTo16k(_ samples: [Float], fromRate: Double) -> [Float] {
-        let targetRate = 16000.0
-        if abs(fromRate - targetRate) < 1.0 {
-            return samples // Already at target rate
-        }
-
-        let ratio = fromRate / targetRate
-        let outputCount = Int(Double(samples.count) / ratio)
-        guard outputCount > 0 else { return [] }
-
-        var output = [Float](repeating: 0, count: outputCount)
-        for i in 0..<outputCount {
-            let srcIndex = Double(i) * ratio
-            let idx = Int(srcIndex)
-            let frac = Float(srcIndex - Double(idx))
-
-            if idx + 1 < samples.count {
-                output[i] = samples[idx] * (1.0 - frac) + samples[idx + 1] * frac
-            } else if idx < samples.count {
-                output[i] = samples[idx]
-            }
-        }
-
-        return output
+        AudioUtilities.resampleTo16k(samples, fromRate: fromRate)
     }
 }
 

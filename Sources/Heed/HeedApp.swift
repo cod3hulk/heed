@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import HeedCore
 import ScreenCaptureKit
 
 @main
@@ -453,26 +454,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Mix mic and system audio by averaging, aligned to the shorter of the two.
-    /// Falls back to mic-only if system audio is empty.
     private func mixAudio(mic: [Float], system: [Float]) -> [Float] {
-        guard !system.isEmpty else {
+        if system.isEmpty {
             print("No system audio — using mic only")
-            return mic
+        } else {
+            print("Mixed \(String(format: "%.1f", Double(mic.count) / 16000))s mic + \(String(format: "%.1f", Double(system.count) / 16000))s system")
         }
-        let count = min(mic.count, system.count)
-        var mixed = [Float](repeating: 0, count: count)
-        for i in 0..<count {
-            let s = mic[i] * 0.6 + system[i] * 0.4
-            mixed[i] = max(-1.0, min(1.0, s))
-        }
-        // Append remainder from the longer source
-        if mic.count > count {
-            mixed.append(contentsOf: mic[count...])
-        } else if system.count > count {
-            mixed.append(contentsOf: system[count...])
-        }
-        print("Mixed \(String(format: "%.1f", Double(mic.count) / 16000))s mic + \(String(format: "%.1f", Double(system.count) / 16000))s system → \(String(format: "%.1f", Double(mixed.count) / 16000))s")
-        return mixed
+        return AudioUtilities.mixAudio(mic: mic, system: system)
     }
 }

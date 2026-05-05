@@ -1,58 +1,6 @@
 @preconcurrency import AVFoundation
+import HeedCore
 import os
-
-/// Thread-safe buffer for collecting audio samples from realtime callbacks
-final class AudioSampleCollector: @unchecked Sendable {
-    // Separate locks prevent waveform timer (60fps) from blocking on drain()
-    private let sampleLock = OSAllocatedUnfairLock()  // guards samples array
-    private let levelLock = OSAllocatedUnfairLock()   // guards _level value
-    private var samples: [Float] = []
-    private var _level: Float = 0
-
-    var level: Float {
-        levelLock.withLock { _level }
-    }
-
-    func append(_ newSamples: [Float], updateLevel: Bool = false) {
-        // Acquire locks separately to minimize contention
-        sampleLock.withLock {
-            samples.append(contentsOf: newSamples)
-        }
-
-        if updateLevel && !newSamples.isEmpty {
-            var sum: Float = 0
-            for s in newSamples { sum += s * s }
-            let rms = sqrtf(sum / Float(newSamples.count))
-
-            levelLock.withLock {
-                _level = min(1.0, rms * 10)
-            }
-        }
-    }
-
-    func drain() -> [Float] {
-        let result = sampleLock.withLock {
-            let r = samples
-            samples = []
-            return r
-        }
-
-        levelLock.withLock {
-            _level = 0
-        }
-
-        return result
-    }
-
-    func reset() {
-        sampleLock.withLock {
-            samples = []
-        }
-        levelLock.withLock {
-            _level = 0
-        }
-    }
-}
 
 enum AudioCaptureError: Error {
     case engineStopped
@@ -283,30 +231,7 @@ final class AudioCaptureService {
         print("Recording started at \(inputFormat.sampleRate) Hz, \(inputFormat.channelCount) ch")
     }
 
-    /// Simple linear interpolation resampling — no AVAudioConverter needed
     private func resampleTo16k(_ samples: [Float], fromRate: Double) -> [Float] {
-        let targetRate = 16000.0
-        if abs(fromRate - targetRate) < 1.0 {
-            return samples // Already at target rate
-        }
-
-        let ratio = fromRate / targetRate
-        let outputCount = Int(Double(samples.count) / ratio)
-        guard outputCount > 0 else { return [] }
-
-        var output = [Float](repeating: 0, count: outputCount)
-        for i in 0..<outputCount {
-            let srcIndex = Double(i) * ratio
-            let idx = Int(srcIndex)
-            let frac = Float(srcIndex - Double(idx))
-
-            if idx + 1 < samples.count {
-                output[i] = samples[idx] * (1.0 - frac) + samples[idx + 1] * frac
-            } else if idx < samples.count {
-                output[i] = samples[idx]
-            }
-        }
-
-        return output
+        AudioUtilities.resampleTo16k(samples, fromRate: fromRate)
     }
 }
