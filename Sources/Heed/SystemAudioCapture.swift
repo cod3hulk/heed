@@ -356,7 +356,7 @@ final class SystemAudioCapture: NSObject, SCStreamDelegate {
         return allSamples
     }
 
-    var nativeSampleRate: Double { collector.sampleRate }
+    private var nativeSampleRate: Double { collector.sampleRate }
 
     /// Simple linear interpolation resampling to 16kHz
     private func resampleTo16k(_ samples: [Float], fromRate: Double) -> [Float] {

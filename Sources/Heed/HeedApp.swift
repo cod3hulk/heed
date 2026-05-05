@@ -260,7 +260,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlay.transitionTo(.transcribing)
 
         Task {
-            let sysSamples16k = await stopAndResampleSystemAudio()
+            let sysSamples16k = await stopSystemAudio()
             if sysSamples16k.isEmpty {
                 warnSystemAudioNotCaptured()
             }
@@ -295,31 +295,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func stopAndResampleSystemAudio() async -> [Float] {
-        let raw = await systemAudio.stopCapture()
-        guard !raw.isEmpty else { return [] }
-        return resampleTo16k(raw, fromRate: systemAudio.nativeSampleRate)
-    }
-
-    /// Simple linear interpolation resampler — mirrors AudioCaptureService's approach.
-    private func resampleTo16k(_ samples: [Float], fromRate: Double) -> [Float] {
-        let targetRate = 16000.0
-        if abs(fromRate - targetRate) < 1.0 { return samples }
-        let ratio = fromRate / targetRate
-        let outputCount = Int(Double(samples.count) / ratio)
-        guard outputCount > 0 else { return [] }
-        var output = [Float](repeating: 0, count: outputCount)
-        for i in 0..<outputCount {
-            let srcIndex = Double(i) * ratio
-            let idx = Int(srcIndex)
-            let frac = Float(srcIndex - Double(idx))
-            if idx + 1 < samples.count {
-                output[i] = samples[idx] * (1.0 - frac) + samples[idx + 1] * frac
-            } else if idx < samples.count {
-                output[i] = samples[idx]
-            }
-        }
-        return output
+    private func stopSystemAudio() async -> [Float] {
+        return await systemAudio.stopCapture()
     }
 
     private func startSummarization() {
