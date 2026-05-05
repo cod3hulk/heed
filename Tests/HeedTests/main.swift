@@ -77,6 +77,59 @@ do {
     assert(output.isEmpty, "empty input → empty output")
 }
 
+do {
+    // Generate 1 second of 440Hz sine at 48kHz
+    let srcRate = 48000.0
+    let freq = 440.0
+    let count = Int(srcRate)
+    let input = (0..<count).map { Float(sin(2.0 * .pi * freq * Double($0) / srcRate)) }
+
+    let output = AudioUtilities.resampleTo16k(input, fromRate: srcRate)
+
+    // Verify amplitude preserved (peak should be ~1.0)
+    let peak = output.max() ?? 0
+    assert(peak > 0.95 && peak <= 1.0, "amplitude preserved after resample: peak=\(peak)")
+
+    // Verify frequency via zero-crossings: a 440Hz sine has 880 crossings/sec
+    var crossings = 0
+    for i in 1..<output.count {
+        if (output[i - 1] < 0 && output[i] >= 0) || (output[i - 1] >= 0 && output[i] < 0) {
+            crossings += 1
+        }
+    }
+    let expectedCrossings = Int(freq * 2)
+    let crossingError = abs(crossings - expectedCrossings)
+    assert(crossingError <= 2, "440Hz sine intact after 48k→16k: crossings=\(crossings), expected≈\(expectedCrossings)")
+}
+
+do {
+    // 44.1kHz — non-integer ratio (2.75625)
+    let srcRate = 44100.0
+    let freq = 440.0
+    let count = Int(srcRate) // 1 second
+    let input = (0..<count).map { Float(sin(2.0 * .pi * freq * Double($0) / srcRate)) }
+
+    let output = AudioUtilities.resampleTo16k(input, fromRate: srcRate)
+
+    // Expected output count: Int(44100 / (44100/16000)) = 16000
+    assertEqual(output.count, 16000, "44.1kHz→16kHz produces 16000 samples")
+
+    // Verify signal integrity via zero-crossings
+    var crossings = 0
+    for i in 1..<output.count {
+        if (output[i - 1] < 0 && output[i] >= 0) || (output[i - 1] >= 0 && output[i] < 0) {
+            crossings += 1
+        }
+    }
+    let expectedCrossings = Int(freq * 2)
+    let crossingError = abs(crossings - expectedCrossings)
+    assert(crossingError <= 2, "440Hz sine intact after 44.1k→16k: crossings=\(crossings), expected≈\(expectedCrossings)")
+
+    // Amplitude check
+    let peak = output.max() ?? 0
+    assert(peak > 0.95 && peak <= 1.0, "amplitude preserved after 44.1k resample: peak=\(peak)")
+}
+
 // MARK: - mixAudio Tests
 
 print("▸ AudioUtilities.mixAudio")
