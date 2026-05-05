@@ -29,6 +29,9 @@ Requires Xcode command-line tools and [Swift Package Manager](https://swift.org/
 # Build release app bundle and codesign
 make build
 
+# Run unit tests
+make test
+
 # Install to /Applications/
 make install
 
@@ -119,6 +122,7 @@ Edit the prompt text sent to the LLM for each action. Changes take effect on the
 
 | Component | Description |
 |-----------|-------------|
+| `HeedCore/` | Shared library: `AudioUtilities` (resampling, mixing), `AudioSampleCollector` |
 | `HeedApp.swift` | `NSApplicationDelegate` entry point; recording lifecycle, audio mixing, LLM dispatch |
 | `AudioCaptureService.swift` | Mic capture via AVAudioEngine, resamples to 16 kHz |
 | `SystemAudioCapture.swift` | System audio capture via ScreenCaptureKit |

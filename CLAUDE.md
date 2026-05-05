@@ -6,6 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 make build     # swift build -c release → app bundle → codesign
+make test      # run unit tests (no Xcode required)
 make clean     # swift package clean + rm build/
 make install   # build + rsync to /Applications/
 ```
@@ -18,11 +19,24 @@ Heed is a macOS menubar-only app (LSUIElement=true) that records meetings, trans
 
 **Key constraint — Swift 6 concurrency:** Package.swift uses `.swiftLanguageMode(.v5)` because AVAudioEngine's `installTap` callback runs on a realtime audio thread and Swift 6 runtime traps on actor isolation boundary crossings. The tap closure must ONLY use raw C pointers (`floatChannelData`) and value types — no `[weak self]` capturing `@MainActor` classes, no `AVAudioPCMBuffer` passed to functions, no static methods on `@MainActor` types.
 
-**Audio pipeline:** `AudioCaptureService` captures mic via AVAudioEngine at native sample rate (typically 48kHz), mixes to mono in the tap callback, collects samples in a thread-safe `AudioSampleCollector` (uses `OSAllocatedUnfairLock`), then resamples to 16kHz on the main thread after recording stops. `SystemAudioCapture` captures system audio via ScreenCaptureKit (`SCStream`, `capturesAudio = true`, `excludesCurrentProcessAudio = true`). Both streams are resampled to 16kHz and mixed (60% mic / 40% system) before transcription.
+**HeedCore library:** Shared audio utilities live in `Sources/HeedCore/` — `AudioUtilities` (resampling, mixing) and `AudioSampleCollector`. Both the app and tests depend on this target.
+
+**Audio pipeline:** `AudioCaptureService` captures mic via AVAudioEngine at native sample rate (typically 48kHz), mixes to mono in the tap callback, collects samples in a thread-safe `AudioSampleCollector` (uses `OSAllocatedUnfairLock`), then resamples to 16kHz on the main thread after recording stops. `SystemAudioCapture` captures system audio via ScreenCaptureKit (`SCStream`, `capturesAudio = true`, `excludesCurrentProcessAudio = true`). Both streams are resampled to 16kHz internally and mixed (60% mic / 40% system) before transcription. Resampling happens exactly once per stream — callers receive 16kHz samples directly from `stopRecording()` / `stopCapture()`.
 
 **Global shortcuts:** `GlobalShortcutManager` uses Carbon `RegisterEventHotKey` (not NSEvent monitors, which require Input Monitoring permission on modern macOS).
 
 **Overlay:** `OverlayWindow` manages a floating `NSPanel` with SwiftUI content via `NSHostingView`. Waveform bars animate in-place based on live audio levels (not scrolling). 60fps timer polls `AudioCaptureService.currentLevel`.
+
+## Testing
+
+Run `make test` before committing any changes to audio pipeline code. Tests live in `Tests/HeedTests/main.swift` as a standalone executable (no XCTest/Xcode dependency).
+
+When modifying audio code, consider whether new tests are needed — especially for:
+- Resampling logic (sample counts, signal integrity, new sample rates)
+- Audio mixing (ratios, clamping, edge cases with mismatched lengths)
+- Sample collector thread safety and drain/reset semantics
+
+Tests should be deterministic and fast (no hardware or network dependencies).
 
 ## macOS Permission Gotcha
 
