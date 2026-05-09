@@ -27,6 +27,12 @@ Heed is a macOS menubar-only app (LSUIElement=true) that records meetings, trans
 
 **Overlay:** `OverlayWindow` manages a floating `NSPanel` with SwiftUI content via `NSHostingView`. Waveform bars animate in-place based on live audio levels (not scrolling). 60fps timer polls `AudioCaptureService.currentLevel`.
 
+**LLM dispatch:** Lives inline in `HeedApp.swift` as `runLLM` / `runClaudeCLI` / `runOllama` (no `LLMService` protocol abstraction). CLI providers run via `zsh -l` so they inherit the user's environment. The recording lifecycle is also driven directly from `HeedApp.swift` — there is no `RecorderStateMachine` type.
+
+**Settings:** `SettingsWindow` is an `NSWindowController` hosting a SwiftUI view with four tabs — General, Key Bindings, LLM, Prompts. The General tab uses `LoginItemManager` (a thin `SMAppService.mainApp` wrapper) for the Launch at Login toggle.
+
+**Config persistence:** `ConfigManager` is a `@MainActor` singleton backed by `UserDefaults` (not a JSON file), exposing `@Published` properties for SwiftUI bindings. `save()` is called explicitly from the settings UI.
+
 ## Testing
 
 Run `make test` before committing any changes to audio pipeline code. Tests live in `Tests/HeedTests/main.swift` as a standalone executable (no XCTest/Xcode dependency).
@@ -41,42 +47,3 @@ Tests should be deterministic and fast (no hardware or network dependencies).
 ## macOS Permission Gotcha
 
 macOS kills the app process when granting new permissions (mic, screen recording). Permissions must be requested upfront at launch in `requestPermissionsUpfront()`, not when the user first tries to record.
-
-## Remaining Work
-
-### State Machine
-A `RecorderStateMachine` needs to drive the full lifecycle and publish state changes to the overlay UI:
-
-```
-.idle → .recording → .transcribing → .actionSelection → .processing → .done(result) → .idle
-                                                                      ↘ .error
-```
-
-- `.actionSelection` — user presses `⌘1` (Summarize) or `⌘2` (Meeting Feedback); overlay shows both options
-- `.processing` — transcript + selected prompt sent to configured LLM provider
-- `.done(result)` — result displayed in overlay, copyable
-
-### LLM Integration
-`LLMService` protocol with three providers, user-configurable via Settings:
-
-| Provider | Mechanism | Config |
-|---|---|---|
-| **Ollama** | HTTP POST `/api/generate` | endpoint URL + model name |
-| **Claude CLI** | shell out to `claude` binary, pipe transcript via stdin | path to binary |
-| **Gemini CLI** | shell out to `gemini` binary, pipe transcript via stdin | path to binary |
-
-Both CLI providers: `echo "<transcript>" | claude -p "<prompt>"` style invocation.
-
-### Post-Transcription Prompts
-Two built-in actions with user-customizable prompt text (stored in config):
-- **Summarize** (`⌘1`) — concise bullet-point summary of the meeting
-- **Meeting Feedback** (`⌘2`) — action items, decisions, sentiment, follow-ups
-
-### Settings Window
-SwiftUI sheet opened from menubar → Settings…:
-- LLM provider picker + model/endpoint fields
-- Custom prompt text areas (summary & feedback)
-- Global shortcut recorder (default `⇧⌘R`)
-
-### Config Persistence
-`ConfigManager` backed by JSON in `~/Library/Application Support/Heed/config.json`. Expose via `@Published` properties for SwiftUI bindings.

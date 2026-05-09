@@ -87,7 +87,10 @@ All key bindings shown in the overlay footer reflect your current Settings confi
 
 ## Settings
 
-Open via **menubar icon → Settings…** (`⌘,`).
+Open via **menubar icon → Settings…** (`⌘,`). Settings are organised into four tabs: General, Key Bindings, LLM, and Prompts.
+
+### General
+Toggle **Launch at Login** to have Heed start automatically when you sign in (uses `SMAppService`).
 
 ### Key Bindings
 Rebind any of the four overlay shortcuts — click a row to enter recording mode, then press your desired key combination. Reset to defaults at any time.
@@ -130,7 +133,8 @@ Edit the prompt text sent to the LLM for each action. Changes take effect on the
 | `OverlayWindow.swift` | Floating `NSPanel`; drives all overlay states and key event handling |
 | `GlobalShortcutManager.swift` | Carbon `RegisterEventHotKey` for `⇧⌘R` |
 | `ConfigManager.swift` | `UserDefaults`-backed settings singleton; key bindings, LLM config, prompts |
-| `SettingsWindow.swift` | `NSWindowController` + SwiftUI settings UI (Key Bindings / LLM / Prompts tabs) |
+| `SettingsWindow.swift` | `NSWindowController` + SwiftUI settings UI (General / Key Bindings / LLM / Prompts tabs) |
+| `LoginItemManager.swift` | `SMAppService.mainApp` wrapper for the Launch at Login toggle |
 
 **Audio pipeline:** mic (AVAudioEngine, native rate) + system audio (SCStream, 48 kHz) → downmix to mono → resample to 16 kHz → mix (60% mic / 40% system) → Parakeet transcription.
 
