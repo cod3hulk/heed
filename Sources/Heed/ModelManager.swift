@@ -29,7 +29,7 @@ final class ModelManager {
                 do {
                     let models = try await AsrModels.loadFromCache()
                     let mgr = AsrManager()
-                    try await mgr.loadModels(models)
+                    try await mgr.initialize(models: models)
                     self.asrManager = mgr
                     self.isReady = true
                     completion(true)
@@ -89,7 +89,7 @@ final class ModelManager {
                     }
                 })
                 let mgr = AsrManager()
-                try await mgr.loadModels(models)
+                try await mgr.initialize(models: models)
                 self.asrManager = mgr
                 self.isReady = true
                 progressModel.status = "Download complete!"
