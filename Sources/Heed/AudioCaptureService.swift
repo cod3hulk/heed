@@ -1,63 +1,202 @@
 @preconcurrency import AVFoundation
+import HeedCore
 import os
 
-/// Thread-safe buffer for collecting audio samples from realtime callbacks
-final class AudioSampleCollector: @unchecked Sendable {
-    private let lock = OSAllocatedUnfairLock()
-    private var samples: [Float] = []
-    private var _level: Float = 0
-
-    var level: Float {
-        lock.withLock { _level }
-    }
-
-    func append(_ newSamples: [Float], updateLevel: Bool = false) {
-        lock.withLock {
-            samples.append(contentsOf: newSamples)
-            if updateLevel && !newSamples.isEmpty {
-                var sum: Float = 0
-                for s in newSamples { sum += s * s }
-                let rms = sqrtf(sum / Float(newSamples.count))
-                _level = min(1.0, rms * 10)
-            }
-        }
-    }
-
-    func drain() -> [Float] {
-        lock.withLock {
-            let result = samples
-            samples = []
-            _level = 0
-            return result
-        }
-    }
-
-    func reset() {
-        lock.withLock {
-            samples = []
-            _level = 0
-        }
-    }
+enum AudioCaptureError: Error {
+    case engineStopped
+    case maxRecoveriesExceeded
 }
 
 @MainActor
 final class AudioCaptureService {
+    private enum EngineState {
+        case stopped
+        case running
+        case restarting
+        case failed(Error)
+
+        var isRunning: Bool {
+            if case .running = self { return true }
+            return false
+        }
+    }
+
     private var micEngine: AVAudioEngine?
     let micCollector = AudioSampleCollector()
     private var inputSampleRate: Double = 48000
+    private var configChangeObserver: Any?
+    // Samples already resampled to 16kHz from segments before device changes
+    private var preResampledSamples: [Float] = []
+
+    private var engineState: EngineState = .stopped
+    private var recoveryAttempts = 0
+    private let maxRecoveryAttempts = 3
+    private var healthCheckTimer: Timer?
+    var onRecordingFailed: ((String) -> Void)?
 
     var currentLevel: Float {
         micCollector.level
     }
 
     var isRecording: Bool {
-        micEngine != nil
+        switch engineState {
+        case .running, .restarting: return true
+        case .stopped, .failed: return false
+        }
+    }
+
+    var engineHealth: String? {
+        switch engineState {
+        case .restarting: return "Reconnecting audio device..."
+        case .failed(let error): return "Audio unavailable: \(error.localizedDescription)"
+        default: return nil
+        }
     }
 
     func startRecording() throws {
         micCollector.reset()
+        preResampledSamples = []
+        engineState = .stopped
 
         let engine = AVAudioEngine()
+        installTap(on: engine)
+
+        // When audio hardware changes (AirPods, headphones, USB devices) AVAudioEngine
+        // stops and its tap silently goes dead. Re-establish the tap immediately so
+        // recording continues without dropping samples.
+        configChangeObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.handleEngineConfigurationChange() }
+        }
+
+        engine.prepare()
+        try engine.start()
+        self.micEngine = engine
+        engineState = .running
+
+        // Health check every 2 seconds to detect silent engine failures
+        healthCheckTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) {
+            [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.checkEngineHealth()
+            }
+        }
+    }
+
+    func stopRecording() -> [Float] {
+        engineState = .stopped
+
+        healthCheckTimer?.invalidate()
+        healthCheckTimer = nil
+
+        if let observer = configChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+            configChangeObserver = nil
+        }
+        micEngine?.inputNode.removeTap(onBus: 0)
+        micEngine?.stop()
+        micEngine = nil
+
+        let rawSamples = micCollector.drain()
+        print("Recording stopped, captured \(rawSamples.count) raw samples at \(inputSampleRate) Hz")
+
+        // Resample to 16kHz on the main thread where it's safe
+        let currentSegment = resampleTo16k(rawSamples, fromRate: inputSampleRate)
+        let allSamples = preResampledSamples + currentSegment
+        preResampledSamples = []
+        return allSamples
+    }
+
+    private func handleEngineConfigurationChange() {
+        guard let engine = micEngine else { return }
+        print("Audio device configuration changed — re-establishing mic tap")
+
+        // Drain and resample whatever was collected before the device change,
+        // so samples collected at the old rate aren't mixed with the new rate.
+        let rawSamples = micCollector.drain()
+        if !rawSamples.isEmpty {
+            let resampled = resampleTo16k(rawSamples, fromRate: inputSampleRate)
+            preResampledSamples.append(contentsOf: resampled)
+        }
+
+        engine.inputNode.removeTap(onBus: 0)
+        installTap(on: engine)
+
+        do {
+            engine.prepare()
+            try engine.start()
+            recoveryAttempts = 0  // Reset on success
+            print("Mic tap restored at \(inputSampleRate) Hz, \(engine.inputNode.outputFormat(forBus: 0).channelCount) ch")
+        } catch {
+            print("Failed to restart audio engine after device change: \(error)")
+            engineState = .failed(error)
+            attemptRecovery()
+        }
+    }
+
+    private func checkEngineHealth() {
+        guard let engine = micEngine, engineState.isRunning else { return }
+
+        if !engine.isRunning {
+            print("⚠ Engine stopped unexpectedly")
+            engineState = .failed(AudioCaptureError.engineStopped)
+            attemptRecovery()
+        }
+    }
+
+    private func attemptRecovery() {
+        guard recoveryAttempts < maxRecoveryAttempts else {
+            engineState = .failed(AudioCaptureError.maxRecoveriesExceeded)
+            notifyRecordingFailed()
+            return
+        }
+
+        recoveryAttempts += 1
+        engineState = .restarting
+
+        // Preserve samples collected before failure
+        let rawSamples = micCollector.drain()
+        if !rawSamples.isEmpty {
+            let resampled = resampleTo16k(rawSamples, fromRate: inputSampleRate)
+            preResampledSamples.append(contentsOf: resampled)
+        }
+
+        guard let engine = micEngine else { return }
+
+        engine.inputNode.removeTap(onBus: 0)
+        installTap(on: engine)
+
+        do {
+            engine.prepare()
+            try engine.start()
+            engineState = .running
+            recoveryAttempts = 0
+            print("✓ Audio engine recovered (attempt \(recoveryAttempts))")
+        } catch {
+            print("✗ Recovery attempt \(recoveryAttempts) failed: \(error)")
+
+            // Retry after delay with exponential backoff
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(recoveryAttempts) * 0.5) {
+                [weak self] in self?.attemptRecovery()
+            }
+        }
+    }
+
+    private func notifyRecordingFailed() {
+        let message: String
+        switch engineState {
+        case .failed(let error):
+            message = "Recording stopped: \(error.localizedDescription)"
+        default:
+            message = "Recording stopped due to audio device error"
+        }
+        onRecordingFailed?(message)
+    }
+
+    private func installTap(on engine: AVAudioEngine) {
         let inputNode = engine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)
         inputSampleRate = inputFormat.sampleRate
@@ -89,48 +228,10 @@ final class AudioCaptureService {
             collector.append(monoSamples, updateLevel: true)
         }
 
-        engine.prepare()
-        try engine.start()
-        self.micEngine = engine
         print("Recording started at \(inputFormat.sampleRate) Hz, \(inputFormat.channelCount) ch")
     }
 
-    func stopRecording() -> [Float] {
-        micEngine?.inputNode.removeTap(onBus: 0)
-        micEngine?.stop()
-        micEngine = nil
-
-        let rawSamples = micCollector.drain()
-        print("Recording stopped, captured \(rawSamples.count) raw samples")
-
-        // Resample to 16kHz on the main thread where it's safe
-        return resampleTo16k(rawSamples, fromRate: inputSampleRate)
-    }
-
-    /// Simple linear interpolation resampling — no AVAudioConverter needed
     private func resampleTo16k(_ samples: [Float], fromRate: Double) -> [Float] {
-        let targetRate = 16000.0
-        if abs(fromRate - targetRate) < 1.0 {
-            return samples // Already at target rate
-        }
-
-        let ratio = fromRate / targetRate
-        let outputCount = Int(Double(samples.count) / ratio)
-        guard outputCount > 0 else { return [] }
-
-        var output = [Float](repeating: 0, count: outputCount)
-        for i in 0..<outputCount {
-            let srcIndex = Double(i) * ratio
-            let idx = Int(srcIndex)
-            let frac = Float(srcIndex - Double(idx))
-
-            if idx + 1 < samples.count {
-                output[i] = samples[idx] * (1.0 - frac) + samples[idx + 1] * frac
-            } else if idx < samples.count {
-                output[i] = samples[idx]
-            }
-        }
-
-        return output
+        AudioUtilities.resampleTo16k(samples, fromRate: fromRate)
     }
 }

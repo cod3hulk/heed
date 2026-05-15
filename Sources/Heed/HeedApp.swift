@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import HeedCore
 import ScreenCaptureKit
 
 @main
@@ -192,6 +193,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startRecording() {
         do {
+            audioService.onRecordingFailed = { [weak self] message in
+                Task { @MainActor [weak self] in
+                    self?.handleRecordingFailure(message: message)
+                }
+            }
             try audioService.startRecording()
             systemAudio.onError = { [weak self] error in
                 Task { @MainActor [weak self] in
@@ -222,6 +228,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func handleRecordingFailure(message: String) {
+        overlay.hide()
+        appPhase = .idle
+        recordingMenuItem.title = "Start Recording"
+
+        let alert = NSAlert()
+        alert.messageText = "Recording Stopped"
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
     private func warnSystemAudioNotCaptured() {
         let alert = NSAlert()
         alert.messageText = "System audio not captured"
@@ -242,7 +261,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlay.transitionTo(.transcribing)
 
         Task {
-            let sysSamples16k = await stopAndResampleSystemAudio()
+            let sysSamples16k = await stopSystemAudio()
             if sysSamples16k.isEmpty {
                 warnSystemAudioNotCaptured()
             }
@@ -277,35 +296,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func stopAndResampleSystemAudio() async -> [Float] {
-        let raw = await systemAudio.stopCapture()
-        guard !raw.isEmpty else { return [] }
-        return resampleTo16k(raw, fromRate: systemAudio.nativeSampleRate)
-    }
-
-    /// Simple linear interpolation resampler — mirrors AudioCaptureService's approach.
-    private func resampleTo16k(_ samples: [Float], fromRate: Double) -> [Float] {
-        let targetRate = 16000.0
-        if abs(fromRate - targetRate) < 1.0 { return samples }
-        let ratio = fromRate / targetRate
-        let outputCount = Int(Double(samples.count) / ratio)
-        guard outputCount > 0 else { return [] }
-        var output = [Float](repeating: 0, count: outputCount)
-        for i in 0..<outputCount {
-            let srcIndex = Double(i) * ratio
-            let idx = Int(srcIndex)
-            let frac = Float(srcIndex - Double(idx))
-            if idx + 1 < samples.count {
-                output[i] = samples[idx] * (1.0 - frac) + samples[idx + 1] * frac
-            } else if idx < samples.count {
-                output[i] = samples[idx]
-            }
-        }
-        return output
+    private func stopSystemAudio() async -> [Float] {
+        return await systemAudio.stopCapture()
     }
 
     private func startSummarization() {
         guard appPhase == .done, !pendingTranscript.isEmpty else { return }
+
+        // Check cache first
+        if let cached = overlay.getCachedSummary() {
+            let hasFeedback = overlay.getCachedFeedback() != nil
+            overlay.transitionTo(.result(cached, title: "Summary", hasSummary: true, hasFeedback: hasFeedback))
+            return
+        }
+
         appPhase = .processing
         recordingMenuItem.title = "Summarizing…"
         overlay.transitionTo(.processing(label: "SUMMARIZING"))
@@ -318,7 +322,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task {
             let summary = await runLLM(transcript: transcript, prompt: prompt, provider: provider)
             let result  = summary ?? "(summarization failed)"
-            overlay.transitionTo(.result(result, title: "Summary"))
+            let hasFeedback = overlay.getCachedFeedback() != nil
+            overlay.transitionTo(.result(result, title: "Summary", hasSummary: true, hasFeedback: hasFeedback))
             appPhase = .done
             recordingMenuItem.title = "Start Recording"
         }
@@ -326,6 +331,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startMeetingFeedback() {
         guard appPhase == .done, !pendingTranscript.isEmpty else { return }
+
+        // Check cache first
+        if let cached = overlay.getCachedFeedback() {
+            let hasSummary = overlay.getCachedSummary() != nil
+            overlay.transitionTo(.result(cached, title: "Meeting Feedback", hasSummary: hasSummary, hasFeedback: true))
+            return
+        }
+
         appPhase = .processing
         recordingMenuItem.title = "Analyzing…"
         overlay.transitionTo(.processing(label: "ANALYZING"))
@@ -337,7 +350,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task {
             let result  = await runLLM(transcript: transcript, prompt: prompt, provider: provider)
             let display = result ?? "(feedback failed)"
-            overlay.transitionTo(.result(display, title: "Meeting Feedback"))
+            let hasSummary = overlay.getCachedSummary() != nil
+            overlay.transitionTo(.result(display, title: "Meeting Feedback", hasSummary: hasSummary, hasFeedback: true))
             appPhase = .done
             recordingMenuItem.title = "Start Recording"
         }
@@ -440,26 +454,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Mix mic and system audio by averaging, aligned to the shorter of the two.
-    /// Falls back to mic-only if system audio is empty.
     private func mixAudio(mic: [Float], system: [Float]) -> [Float] {
-        guard !system.isEmpty else {
+        if system.isEmpty {
             print("No system audio — using mic only")
-            return mic
+        } else {
+            print("Mixed \(String(format: "%.1f", Double(mic.count) / 16000))s mic + \(String(format: "%.1f", Double(system.count) / 16000))s system")
         }
-        let count = min(mic.count, system.count)
-        var mixed = [Float](repeating: 0, count: count)
-        for i in 0..<count {
-            let s = mic[i] * 0.6 + system[i] * 0.4
-            mixed[i] = max(-1.0, min(1.0, s))
-        }
-        // Append remainder from the longer source
-        if mic.count > count {
-            mixed.append(contentsOf: mic[count...])
-        } else if system.count > count {
-            mixed.append(contentsOf: system[count...])
-        }
-        print("Mixed \(String(format: "%.1f", Double(mic.count) / 16000))s mic + \(String(format: "%.1f", Double(system.count) / 16000))s system → \(String(format: "%.1f", Double(mixed.count) / 16000))s")
-        return mixed
+        return AudioUtilities.mixAudio(mic: mic, system: system)
     }
 }

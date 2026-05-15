@@ -3,7 +3,7 @@ BUILD_DIR   = build
 APP_BUNDLE  = $(BUILD_DIR)/$(APP_NAME).app
 CONTENTS    = $(APP_BUNDLE)/Contents
 
-.PHONY: build clean install
+.PHONY: build clean install test
 
 build:
 	swift build -c release
@@ -15,6 +15,9 @@ build:
 clean:
 	swift package clean
 	rm -rf $(BUILD_DIR)
+
+test:
+	swift run HeedTests
 
 install: build
 	rsync -a --delete $(APP_BUNDLE) /Applications/

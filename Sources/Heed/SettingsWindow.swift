@@ -53,6 +53,9 @@ final class SettingsViewModel: ObservableObject {
     @Published var summaryPrompt: String
     @Published var feedbackPrompt: String
 
+    // General
+    @Published var launchAtLogin: Bool
+
     var onClose: (() -> Void)?
     private var monitor: Any?
 
@@ -69,6 +72,7 @@ final class SettingsViewModel: ObservableObject {
         ollamaModel    = cfg.ollamaModel
         summaryPrompt  = cfg.summaryPrompt
         feedbackPrompt = cfg.feedbackPrompt
+        launchAtLogin  = LoginItemManager.isEnabled
     }
 
     // MARK: Key recording
@@ -114,6 +118,11 @@ final class SettingsViewModel: ObservableObject {
         cfg.summaryPrompt   = summaryPrompt
         cfg.feedbackPrompt   = feedbackPrompt
         cfg.save()
+        do {
+            try LoginItemManager.setEnabled(launchAtLogin)
+        } catch {
+            print("Failed to update Launch at Login: \(error)")
+        }
         onClose?()
     }
 
@@ -137,6 +146,7 @@ final class SettingsViewModel: ObservableObject {
         ollamaModel    = cfg.ollamaModel
         summaryPrompt  = cfg.summaryPrompt
         feedbackPrompt = cfg.feedbackPrompt
+        launchAtLogin  = LoginItemManager.isEnabled
     }
 }
 
@@ -150,9 +160,10 @@ struct SettingsView: View {
         VStack(spacing: 0) {
             // Tab selector — segmented control avoids TabView's title-bar clipping issue
             Picker("", selection: $selectedTab) {
-                Text("Key Bindings").tag(0)
-                Text("LLM").tag(1)
-                Text("Prompts").tag(2)
+                Text("General").tag(0)
+                Text("Key Bindings").tag(1)
+                Text("LLM").tag(2)
+                Text("Prompts").tag(3)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
@@ -164,8 +175,9 @@ struct SettingsView: View {
 
             Group {
                 switch selectedTab {
-                case 0: KeyBindingsTab(vm: vm)
-                case 1: LLMTab(vm: vm)
+                case 0: GeneralTab(vm: vm)
+                case 1: KeyBindingsTab(vm: vm)
+                case 2: LLMTab(vm: vm)
                 default: PromptsTab(vm: vm)
                 }
             }
@@ -185,6 +197,40 @@ struct SettingsView: View {
             .padding(.vertical, 14)
         }
         .onDisappear { vm.stopRecording() }
+    }
+}
+
+// MARK: - General Tab
+
+struct GeneralTab: View {
+    @ObservedObject var vm: SettingsViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(spacing: 0) {
+                HStack {
+                    Text("Launch at Login")
+                        .frame(width: 160, alignment: .leading)
+                    Spacer()
+                    Toggle("", isOn: $vm.launchAtLogin)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+            }
+            .background(Color(NSColor.controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(NSColor.separatorColor), lineWidth: 0.5))
+
+            Text("Heed will start automatically when you log in to your Mac. The app must be installed in /Applications for this to take effect.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Spacer()
+        }
+        .padding(20)
     }
 }
 
