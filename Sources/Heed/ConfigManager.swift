@@ -12,6 +12,7 @@ struct KeyBinding: Codable, Equatable {
     static let copy      = KeyBinding(keyCode: 36, modifierFlags: 0)  // Return
     static let summarize = KeyBinding(keyCode: 18, modifierFlags: NSEvent.ModifierFlags.command.rawValue)  // ⌘1
     static let feedback  = KeyBinding(keyCode: 19, modifierFlags: NSEvent.ModifierFlags.command.rawValue)  // ⌘2
+    static let ask       = KeyBinding(keyCode: 49, modifierFlags: NSEvent.ModifierFlags.option.rawValue)   // ⌥Space
 
     // MARK: Display
 
@@ -78,6 +79,7 @@ final class ConfigManager: ObservableObject {
     @Published var copyBinding:      KeyBinding
     @Published var summarizeBinding: KeyBinding
     @Published var feedbackBinding:  KeyBinding
+    @Published var askBinding:       KeyBinding
 
     // LLM
     @Published var llmProvider: LLMProvider
@@ -89,6 +91,7 @@ final class ConfigManager: ObservableObject {
     // Prompts
     @Published var summaryPrompt: String
     @Published var feedbackPrompt: String
+    @Published var qaPrompt: String
 
     static let defaultSummaryPrompt =
         "Summarize this meeting transcript concisely. List key discussion topics, decisions made, and action items. Be brief and use bullet points."
@@ -96,11 +99,15 @@ final class ConfigManager: ObservableObject {
     static let defaultFeedbackPrompt =
         "Analyze this meeting transcript and provide structured feedback covering: key decisions made, action items with owners (if mentioned), unresolved questions, overall sentiment, and suggested follow-ups."
 
+    static let defaultQAPrompt =
+        "You are answering a follow-up question about a meeting that is currently in progress. Use only the transcript below as your source of truth. If the answer isn't there, say so briefly. Keep the answer short and specific."
+
     private init() {
         discardBinding   = Self.loadCodable(key: "keyBinding.discard",   default: .discard)
         copyBinding      = Self.loadCodable(key: "keyBinding.copy",      default: .copy)
         summarizeBinding = Self.loadCodable(key: "keyBinding.summarize", default: .summarize)
         feedbackBinding  = Self.loadCodable(key: "keyBinding.feedback",  default: .feedback)
+        askBinding       = Self.loadCodable(key: "keyBinding.ask",       default: .ask)
 
         llmProvider   = Self.loadCodable(key: "llm.provider",  default: .claudeCLI)
         claudeCLIPath  = UserDefaults.standard.string(forKey: "llm.claudeCLIPath")   ?? ""
@@ -110,6 +117,7 @@ final class ConfigManager: ObservableObject {
 
         summaryPrompt  = UserDefaults.standard.string(forKey: "prompt.summary")  ?? Self.defaultSummaryPrompt
         feedbackPrompt = UserDefaults.standard.string(forKey: "prompt.feedback") ?? Self.defaultFeedbackPrompt
+        qaPrompt       = UserDefaults.standard.string(forKey: "prompt.qa")       ?? Self.defaultQAPrompt
     }
 
     func save() {
@@ -117,6 +125,7 @@ final class ConfigManager: ObservableObject {
         storeCodable(copyBinding,      key: "keyBinding.copy")
         storeCodable(summarizeBinding, key: "keyBinding.summarize")
         storeCodable(feedbackBinding,  key: "keyBinding.feedback")
+        storeCodable(askBinding,       key: "keyBinding.ask")
 
         storeCodable(llmProvider, key: "llm.provider")
         UserDefaults.standard.set(claudeCLIPath,   forKey: "llm.claudeCLIPath")
@@ -126,6 +135,7 @@ final class ConfigManager: ObservableObject {
 
         UserDefaults.standard.set(summaryPrompt,  forKey: "prompt.summary")
         UserDefaults.standard.set(feedbackPrompt, forKey: "prompt.feedback")
+        UserDefaults.standard.set(qaPrompt,       forKey: "prompt.qa")
     }
 
     func resetKeyBindings() {
@@ -133,11 +143,13 @@ final class ConfigManager: ObservableObject {
         copyBinding      = .copy
         summarizeBinding = .summarize
         feedbackBinding  = .feedback
+        askBinding       = .ask
     }
 
     func resetPrompts() {
         summaryPrompt  = Self.defaultSummaryPrompt
         feedbackPrompt = Self.defaultFeedbackPrompt
+        qaPrompt       = Self.defaultQAPrompt
     }
 
     // MARK: Private

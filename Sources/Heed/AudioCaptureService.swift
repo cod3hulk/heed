@@ -100,6 +100,14 @@ final class AudioCaptureService {
         }
     }
 
+    /// Return everything captured so far, resampled to 16kHz, without stopping the engine.
+    /// Safe to call from the main actor while recording continues.
+    func snapshotSamples() -> [Float] {
+        let raw = micCollector.snapshot()
+        let currentSegment = resampleTo16k(raw, fromRate: inputSampleRate)
+        return preResampledSamples + currentSegment
+    }
+
     func stopRecording() -> [Float] {
         engineState = .stopped
 

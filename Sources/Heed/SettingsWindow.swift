@@ -33,13 +33,14 @@ final class SettingsWindowController: NSWindowController {
 
 @MainActor
 final class SettingsViewModel: ObservableObject {
-    enum RecordingField { case discard, copy, summarize, feedback }
+    enum RecordingField { case discard, copy, summarize, feedback, ask }
 
     // Key bindings
     @Published var discard:   KeyBinding
     @Published var copy:      KeyBinding
     @Published var summarize: KeyBinding
     @Published var feedback:  KeyBinding
+    @Published var ask:       KeyBinding
     @Published var recordingField: RecordingField? = nil
 
     // LLM
@@ -52,6 +53,7 @@ final class SettingsViewModel: ObservableObject {
     // Prompts
     @Published var summaryPrompt: String
     @Published var feedbackPrompt: String
+    @Published var qaPrompt: String
 
     // General
     @Published var launchAtLogin: Bool
@@ -65,6 +67,7 @@ final class SettingsViewModel: ObservableObject {
         copy          = cfg.copyBinding
         summarize     = cfg.summarizeBinding
         feedback      = cfg.feedbackBinding
+        ask           = cfg.askBinding
         llmProvider    = cfg.llmProvider
         claudeCLIPath  = cfg.claudeCLIPath
         geminiCLIPath  = cfg.geminiCLIPath
@@ -72,6 +75,7 @@ final class SettingsViewModel: ObservableObject {
         ollamaModel    = cfg.ollamaModel
         summaryPrompt  = cfg.summaryPrompt
         feedbackPrompt = cfg.feedbackPrompt
+        qaPrompt       = cfg.qaPrompt
         launchAtLogin  = LoginItemManager.isEnabled
     }
 
@@ -90,6 +94,7 @@ final class SettingsViewModel: ObservableObject {
             case .copy:      self.copy      = binding
             case .summarize: self.summarize = binding
             case .feedback:  self.feedback  = binding
+            case .ask:       self.ask       = binding
             }
             self.stopRecording()
             return nil
@@ -110,6 +115,7 @@ final class SettingsViewModel: ObservableObject {
         cfg.copyBinding      = copy
         cfg.summarizeBinding = summarize
         cfg.feedbackBinding  = feedback
+        cfg.askBinding       = ask
         cfg.llmProvider     = llmProvider
         cfg.claudeCLIPath   = claudeCLIPath
         cfg.geminiCLIPath   = geminiCLIPath
@@ -117,6 +123,7 @@ final class SettingsViewModel: ObservableObject {
         cfg.ollamaModel     = ollamaModel
         cfg.summaryPrompt   = summaryPrompt
         cfg.feedbackPrompt   = feedbackPrompt
+        cfg.qaPrompt         = qaPrompt
         cfg.save()
         do {
             try LoginItemManager.setEnabled(launchAtLogin)
@@ -139,6 +146,7 @@ final class SettingsViewModel: ObservableObject {
         copy           = cfg.copyBinding
         summarize      = cfg.summarizeBinding
         feedback       = cfg.feedbackBinding
+        ask            = cfg.askBinding
         llmProvider    = cfg.llmProvider
         claudeCLIPath  = cfg.claudeCLIPath
         geminiCLIPath  = cfg.geminiCLIPath
@@ -146,6 +154,7 @@ final class SettingsViewModel: ObservableObject {
         ollamaModel    = cfg.ollamaModel
         summaryPrompt  = cfg.summaryPrompt
         feedbackPrompt = cfg.feedbackPrompt
+        qaPrompt       = cfg.qaPrompt
         launchAtLogin  = LoginItemManager.isEnabled
     }
 }
@@ -181,7 +190,7 @@ struct SettingsView: View {
                 default: PromptsTab(vm: vm)
                 }
             }
-            .frame(width: 500, height: 340)
+            .frame(width: 500, height: 400)
 
             Divider()
 
@@ -269,6 +278,13 @@ struct KeyBindingsTab: View {
                     isRecording: vm.recordingField == .feedback,
                     onRecord: { vm.startRecording(.feedback) }
                 )
+                Divider()
+                BindingRow(
+                    label: "Ask During Recording",
+                    binding: vm.ask,
+                    isRecording: vm.recordingField == .ask,
+                    onRecord: { vm.startRecording(.ask) }
+                )
             }
             .background(Color(NSColor.controlBackgroundColor))
             .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -280,6 +296,7 @@ struct KeyBindingsTab: View {
                     vm.copy      = .copy
                     vm.summarize = .summarize
                     vm.feedback  = .feedback
+                    vm.ask       = .ask
                 }
                 .foregroundColor(.secondary)
                 Spacer()
@@ -414,7 +431,19 @@ struct PromptsTab: View {
                     .font(.headline)
                 TextEditor(text: $vm.feedbackPrompt)
                     .font(.system(size: 12))
-                    .frame(height: 90)
+                    .frame(height: 70)
+                    .scrollContentBackground(.hidden)
+                    .background(Color(NSColor.controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color(NSColor.separatorColor), lineWidth: 0.5))
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Ask During Recording")
+                    .font(.headline)
+                TextEditor(text: $vm.qaPrompt)
+                    .font(.system(size: 12))
+                    .frame(height: 70)
                     .scrollContentBackground(.hidden)
                     .background(Color(NSColor.controlBackgroundColor))
                     .clipShape(RoundedRectangle(cornerRadius: 6))
@@ -422,8 +451,12 @@ struct PromptsTab: View {
             }
 
             HStack {
-                Button("Reset to Defaults") { vm.summaryPrompt = ConfigManager.defaultSummaryPrompt; vm.feedbackPrompt = ConfigManager.defaultFeedbackPrompt }
-                    .foregroundColor(.secondary)
+                Button("Reset to Defaults") {
+                    vm.summaryPrompt = ConfigManager.defaultSummaryPrompt
+                    vm.feedbackPrompt = ConfigManager.defaultFeedbackPrompt
+                    vm.qaPrompt = ConfigManager.defaultQAPrompt
+                }
+                .foregroundColor(.secondary)
                 Spacer()
             }
         }

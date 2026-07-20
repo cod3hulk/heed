@@ -16,6 +16,12 @@ enum OverlayPhase {
     case result(String, title: String, hasSummary: Bool, hasFeedback: Bool)
 }
 
+struct QAExchange: Identifiable {
+    let id = UUID()
+    let question: String
+    var answer: String?   // nil while awaiting the LLM
+}
+
 @MainActor
 final class OverlayWindow {
     private var panel: NSPanel?
@@ -40,12 +46,23 @@ final class OverlayWindow {
     var onSummarize: (() -> Void)? { didSet { waveformModel.onSummarizeTapped = onSummarize } }
     /// Called when ⌘2 is pressed in the done state to request meeting feedback.
     var onMeetingFeedback: (() -> Void)? { didSet { waveformModel.onFeedbackTapped = onMeetingFeedback } }
+    /// Called when the user submits a live-recording question. Receives the question text
+    /// and the exchange ID that the answer should be attached to.
+    var onAsk: ((String, UUID) -> Void)? {
+        didSet {
+            waveformModel.onAskSubmit = { [weak self] question in
+                self?.appendPendingExchange(question: question)
+            }
+        }
+    }
 
     func show(audioService: AudioCaptureService, systemAudio: SystemAudioCapture? = nil) {
         guard panel == nil else { return }
         audioServiceRef = audioService
         systemAudioRef = systemAudio
         waveformModel.phase = .recording
+        waveformModel.qaExchanges = []
+        waveformModel.qaVisible = false
 
         makePanel(width: 800, height: 60)
 
@@ -76,6 +93,11 @@ final class OverlayWindow {
         secondsTimer = nil
         audioServiceRef = nil
         systemAudioRef = nil
+
+        // Q&A only lives during recording; discard any ephemeral state.
+        waveformModel.qaVisible = false
+        waveformModel.qaExchanges = []
+        waveformModel.qaInput = ""
 
         // Set phase first so SwiftUI layout reflects new content before autoFit measurement
         waveformModel.phase = phase
@@ -146,6 +168,58 @@ final class OverlayWindow {
     func getCachedSummary() -> String? { cachedSummary }
     func getCachedFeedback() -> String? { cachedFeedback }
     func getOriginalTranscript() -> String { originalTranscript }
+
+    // MARK: - Q&A (during recording)
+
+    /// Toggle the Q&A panel. Called from the ⌥Space hotkey.
+    func toggleQA() {
+        guard case .recording = waveformModel.phase else { return }
+        setQAVisible(!waveformModel.qaVisible)
+    }
+
+    private func setQAVisible(_ visible: Bool) {
+        waveformModel.qaVisible = visible
+        if visible {
+            resizePanel(width: 560, height: 320)
+            panel?.makeKeyAndOrderFront(nil)
+            installQAKeyMonitor()
+        } else {
+            waveformModel.qaInput = ""
+            resizePanel(width: 800, height: 60)
+            removeKeyMonitor()
+        }
+    }
+
+    /// Called by the WaveformModel when the user submits a question. Appends a
+    /// placeholder exchange (nil answer) and forwards to the app-level handler.
+    private func appendPendingExchange(question: String) {
+        let exchange = QAExchange(question: question, answer: nil)
+        waveformModel.qaExchanges.append(exchange)
+        waveformModel.qaInput = ""
+        onAsk?(question, exchange.id)
+    }
+
+    /// Called by HeedApp when the LLM answer arrives (or fails).
+    func completeExchange(id: UUID, answer: String) {
+        if let idx = waveformModel.qaExchanges.firstIndex(where: { $0.id == id }) {
+            waveformModel.qaExchanges[idx].answer = answer
+        }
+    }
+
+    private func installQAKeyMonitor() {
+        removeKeyMonitor()
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            // ESC closes the Q&A panel (only when the text field isn't first responder;
+            // the field's ESC is handled by SwiftUI). This catches ESC when the field
+            // is empty or not focused.
+            if event.keyCode == 53 && event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty {
+                self.setQAVisible(false)
+                return nil
+            }
+            return event
+        }
+    }
 
     // MARK: - Key handling
 
@@ -262,11 +336,18 @@ final class WaveformModel: ObservableObject {
     @Published var barHeights: [Float] = Array(repeating: 0, count: WaveformModel.barCount)
     @Published var phase: OverlayPhase = .recording
     @Published var elapsedSeconds: Int = 0
+
+    // Q&A state (only meaningful while phase == .recording)
+    @Published var qaVisible: Bool = false
+    @Published var qaExchanges: [QAExchange] = []
+    @Published var qaInput: String = ""
+
     var onStopTapped: (() -> Void)?
     var onSummarizeTapped: (() -> Void)?
     var onFeedbackTapped: (() -> Void)?
     var onCopyTapped: (() -> Void)?
     var onDiscardTapped: (() -> Void)?
+    var onAskSubmit: ((String) -> Void)?
     private var animPhase: Double = 0
     private var smoothedLevel: Float = 0
 
@@ -296,6 +377,9 @@ final class WaveformModel: ObservableObject {
         animPhase = 0
         elapsedSeconds = 0
         phase = .recording
+        qaVisible = false
+        qaExchanges = []
+        qaInput = ""
         // Keep action callbacks alive for action switching
         // onSummarizeTapped = nil
         // onFeedbackTapped = nil
@@ -313,7 +397,11 @@ struct OverlayContentView: View {
         ZStack {
             switch model.phase {
             case .recording:
-                RecordingView(model: model)
+                if model.qaVisible {
+                    RecordingWithQAView(model: model)
+                } else {
+                    RecordingView(model: model)
+                }
             case .transcribing:
                 TranscribingView()
             case .done(let text):
@@ -856,6 +944,231 @@ struct PulsingDot: View {
                 .shadow(color: Self.dotColor.opacity(0.5), radius: 6)
         }
         .onAppear { isPulsing = true }
+    }
+}
+
+struct RecordingWithQAView: View {
+    @ObservedObject var model: WaveformModel
+    @FocusState private var inputFocused: Bool
+    private static let accentColor = Color(red: 0.369, green: 0.361, blue: 0.902) // #5e5ce6
+
+    var body: some View {
+        VStack(spacing: 8) {
+            RecordingView(model: model)
+
+            // Q&A card
+            VStack(spacing: 0) {
+                // Exchanges — most recent at the bottom
+                ScrollViewReader { proxy in
+                    ScrollView(.vertical) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            if model.qaExchanges.isEmpty {
+                                Text("Ask a question about what's been said so far. The recording keeps going.")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(.white.opacity(0.5))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.top, 4)
+                            } else {
+                                ForEach(model.qaExchanges) { exchange in
+                                    ExchangeRow(exchange: exchange)
+                                        .id(exchange.id)
+                                }
+                            }
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .scrollIndicators(.visible)
+                    .frame(maxHeight: .infinity)
+                    .onChange(of: model.qaExchanges.count) { _, _ in
+                        if let last = model.qaExchanges.last {
+                            withAnimation(.easeOut(duration: 0.2)) {
+                                proxy.scrollTo(last.id, anchor: .bottom)
+                            }
+                        }
+                    }
+                }
+
+                Rectangle()
+                    .fill(Color.white.opacity(0.1))
+                    .frame(height: 1)
+
+                // Input row
+                HStack(spacing: 10) {
+                    Image(systemName: "questionmark.bubble.fill")
+                        .font(.system(size: 12))
+                        .foregroundColor(Self.accentColor)
+                    QATextField(text: $model.qaInput, onSubmit: submit)
+                        .focused($inputFocused)
+                    Button(action: submit) {
+                        Text("Ask")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(
+                                Capsule().fill(canSubmit ? Self.accentColor : Color.white.opacity(0.15))
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canSubmit)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(Color.black.opacity(0.2))
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(.ultraThinMaterial)
+                    .environment(\.colorScheme, .dark)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .padding(.horizontal, 8)
+            .padding(.bottom, 8)
+        }
+        .onAppear { inputFocused = true }
+    }
+
+    private var canSubmit: Bool {
+        !model.qaInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func submit() {
+        let trimmed = model.qaInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        model.onAskSubmit?(trimmed)
+    }
+}
+
+/// NSTextField wrapper so we can auto-focus and get a clean single-line editor
+/// with proper keyboard handling inside a floating NSPanel.
+struct QATextField: NSViewRepresentable {
+    @Binding var text: String
+    let onSubmit: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text, onSubmit: onSubmit)
+    }
+
+    func makeNSView(context: Context) -> NSTextField {
+        let field = NSTextField()
+        field.isBordered = false
+        field.drawsBackground = false
+        field.focusRingType = .none
+        field.font = .systemFont(ofSize: 13)
+        field.textColor = .white
+        field.placeholderAttributedString = NSAttributedString(
+            string: "Ask something…",
+            attributes: [
+                .foregroundColor: NSColor.white.withAlphaComponent(0.4),
+                .font: NSFont.systemFont(ofSize: 13)
+            ]
+        )
+        field.delegate = context.coordinator
+        field.target = context.coordinator
+        field.action = #selector(Coordinator.submitAction(_:))
+        field.stringValue = text
+        return field
+    }
+
+    func updateNSView(_ nsView: NSTextField, context: Context) {
+        if nsView.stringValue != text {
+            nsView.stringValue = text
+        }
+        context.coordinator.text = $text
+        context.coordinator.onSubmit = onSubmit
+    }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var text: Binding<String>
+        var onSubmit: () -> Void
+
+        init(text: Binding<String>, onSubmit: @escaping () -> Void) {
+            self.text = text
+            self.onSubmit = onSubmit
+        }
+
+        func controlTextDidChange(_ obj: Notification) {
+            guard let field = obj.object as? NSTextField else { return }
+            text.wrappedValue = field.stringValue
+        }
+
+        @objc func submitAction(_ sender: NSTextField) {
+            onSubmit()
+        }
+    }
+}
+
+struct ExchangeRow: View {
+    let exchange: QAExchange
+    private static let accentColor = Color(red: 0.369, green: 0.361, blue: 0.902) // #5e5ce6
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 8) {
+                Text("Q")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundColor(.white)
+                    .frame(width: 16, height: 16)
+                    .background(Self.accentColor.opacity(0.6))
+                    .clipShape(RoundedRectangle(cornerRadius: 3))
+                Text(exchange.question)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.95))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            HStack(alignment: .top, spacing: 8) {
+                Text("A")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundColor(.white)
+                    .frame(width: 16, height: 16)
+                    .background(Color.white.opacity(0.15))
+                    .clipShape(RoundedRectangle(cornerRadius: 3))
+                if let answer = exchange.answer {
+                    Text(answer)
+                        .font(.system(size: 12))
+                        .foregroundColor(.white.opacity(0.85))
+                        .lineSpacing(2)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    ThinkingIndicator()
+                }
+            }
+        }
+    }
+}
+
+struct ThinkingIndicator: View {
+    @State private var phase: Double = 0
+    private static let accentColor = Color(red: 0.369, green: 0.361, blue: 0.902) // #5e5ce6
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(0..<3) { i in
+                Circle()
+                    .fill(Self.accentColor)
+                    .frame(width: 5, height: 5)
+                    .opacity(dotOpacity(index: i))
+            }
+        }
+        .onAppear {
+            withAnimation(.linear(duration: 1.0).repeatForever(autoreverses: false)) {
+                phase = 1.0
+            }
+        }
+    }
+
+    private func dotOpacity(index: Int) -> Double {
+        let offset = Double(index) * 0.33
+        let t = (phase + offset).truncatingRemainder(dividingBy: 1.0)
+        return 0.3 + 0.7 * abs(sin(t * .pi))
     }
 }
 

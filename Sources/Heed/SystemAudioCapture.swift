@@ -99,6 +99,12 @@ final class SystemAudioCollector: NSObject, SCStreamOutput, @unchecked Sendable 
         }
     }
 
+    /// Copy the buffered samples and current sample rate without clearing.
+    /// Safe to call while the stream continues to deliver audio.
+    func snapshot() -> (samples: [Float], sampleRate: Double) {
+        sampleLock.withLock { (samples, _sampleRate) }
+    }
+
     func drain() -> [Float] {
         let result = sampleLock.withLock {
             let r = samples
@@ -327,6 +333,13 @@ final class SystemAudioCapture: NSObject, SCStreamDelegate {
                 }
             }
         }
+    }
+
+    /// Return everything captured so far, resampled to 16kHz, without stopping the stream.
+    func snapshotSamples() -> [Float] {
+        let (raw, rate) = collector.snapshot()
+        let currentSegment = resampleTo16k(raw, fromRate: rate)
+        return preResampledSamples + currentSegment
     }
 
     /// Stop capturing and return resampled samples at 16kHz.
