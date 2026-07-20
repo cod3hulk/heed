@@ -43,6 +43,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlay.onMeetingFeedback = { [weak self] in
             self?.startMeetingFeedback()
         }
+        overlay.onAsk = { [weak self] question, exchangeID in
+            self?.answerLiveQuestion(question: question, exchangeID: exchangeID)
+        }
         // Defer past applicationDidFinishLaunching — runModal() inside this
         // delegate method crashes AppKit's autorelease pool later.
         DispatchQueue.main.async { self.checkModelAvailability() }
@@ -61,6 +64,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupGlobalShortcut() {
         shortcutManager.onToggleRecording = { [weak self] in
             self?.toggleRecording()
+        }
+        shortcutManager.onAsk = { [weak self] in
+            self?.overlay.toggleQA()
         }
         shortcutManager.start()
     }
@@ -215,6 +221,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
             overlay.show(audioService: audioService, systemAudio: systemAudio)
+            shortcutManager.registerAskShortcut(binding: ConfigManager.shared.askBinding)
             recordingMenuItem.title = "Stop Recording"
             appPhase = .recording
         } catch {
@@ -229,6 +236,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func handleRecordingFailure(message: String) {
+        shortcutManager.unregisterAskShortcut()
         overlay.hide()
         appPhase = .idle
         recordingMenuItem.title = "Start Recording"
@@ -255,6 +263,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func stopRecordingAndTranscribe() {
+        shortcutManager.unregisterAskShortcut()
         let micSamples = audioService.stopRecording()
         appPhase = .transcribing
         recordingMenuItem.title = "Transcribing…"
@@ -354,6 +363,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             overlay.transitionTo(.result(display, title: "Meeting Feedback", hasSummary: hasSummary, hasFeedback: true))
             appPhase = .done
             recordingMenuItem.title = "Start Recording"
+        }
+    }
+
+    // MARK: - Live Q&A
+
+    private func answerLiveQuestion(question: String, exchangeID: UUID) {
+        guard appPhase == .recording else { return }
+
+        let micSnapshot = audioService.snapshotSamples()
+        let systemSnapshot = systemAudio.snapshotSamples()
+        let mixed = AudioUtilities.mixAudio(mic: micSnapshot, system: systemSnapshot)
+
+        let prompt   = ConfigManager.shared.qaPrompt
+        let provider = ConfigManager.shared.llmProvider
+
+        Task { [weak self] in
+            guard let self else { return }
+            guard ModelManager.shared.isReady else {
+                self.overlay.completeExchange(id: exchangeID, answer: "(transcription model not ready)")
+                return
+            }
+
+            let transcript = await ModelManager.shared.transcribe(mixed) ?? ""
+            if transcript.isEmpty {
+                self.overlay.completeExchange(id: exchangeID, answer: "(no speech captured yet)")
+                return
+            }
+
+            let composed = "\(prompt)\n\nQuestion: \(question)\n\nTranscript so far:"
+            let answer = await self.runLLM(transcript: transcript, prompt: composed, provider: provider)
+            self.overlay.completeExchange(id: exchangeID, answer: answer ?? "(no answer)")
         }
     }
 

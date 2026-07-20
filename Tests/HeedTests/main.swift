@@ -214,6 +214,24 @@ do {
     assertEqual(collector.level, 0, accuracy: 0.001, "reset clears level")
 }
 
+do {
+    let collector = AudioSampleCollector()
+    collector.append([0.1, 0.2, 0.3])
+    let snap = collector.snapshot()
+    assertEqual(snap, [0.1, 0.2, 0.3], "snapshot returns buffered samples")
+    let drained = collector.drain()
+    assertEqual(drained, [0.1, 0.2, 0.3], "snapshot doesn't clear buffer")
+}
+
+do {
+    let collector = AudioSampleCollector()
+    collector.append([0.1, 0.2])
+    _ = collector.snapshot()
+    collector.append([0.3, 0.4])
+    let snap2 = collector.snapshot()
+    assertEqual(snap2, [0.1, 0.2, 0.3, 0.4], "snapshot reflects appends after prior snapshot")
+}
+
 // MARK: - Summary
 
 print("")

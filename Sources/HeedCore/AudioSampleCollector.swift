@@ -30,6 +30,12 @@ public final class AudioSampleCollector: @unchecked Sendable {
         }
     }
 
+    /// Copy the buffered samples without clearing. Safe to call while
+    /// the tap/stream is still writing.
+    public func snapshot() -> [Float] {
+        sampleLock.withLock { samples }
+    }
+
     public func drain() -> [Float] {
         let result = sampleLock.withLock {
             let r = samples

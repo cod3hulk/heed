@@ -12,6 +12,10 @@ final class ModelManager {
     // Held during download so the @Sendable progress handler can weakly reach it
     private weak var activeProgressModel: DownloadProgressModel?
 
+    // AsrManager isn't documented as reentrant. Serialize transcribe() calls
+    // so a live Q&A ask can't overlap with the final stop-and-transcribe.
+    private var transcribeChain: Task<String?, Never> = Task { nil }
+
     /// True if the Core ML model bundles are already on disk.
     var isModelCached: Bool {
         let encoder = AsrModels.defaultCacheDirectory()
@@ -44,14 +48,22 @@ final class ModelManager {
     }
 
     func transcribe(_ samples: [Float]) async -> String? {
-        guard let asrManager, isReady else { return nil }
-        do {
-            let result = try await asrManager.transcribe(samples, source: .microphone)
-            return result.text
-        } catch {
-            print("Transcription error: \(error)")
-            return nil
+        let previous = transcribeChain
+        let asrManager = self.asrManager
+        let ready = self.isReady
+        let task = Task { () -> String? in
+            _ = await previous.value
+            guard let asrManager, ready else { return nil }
+            do {
+                let result = try await asrManager.transcribe(samples, source: .microphone)
+                return result.text
+            } catch {
+                print("Transcription error: \(error)")
+                return nil
+            }
         }
+        transcribeChain = task
+        return await task.value
     }
 
     // MARK: - Download flow
