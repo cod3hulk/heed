@@ -5,6 +5,7 @@ import os
 enum AudioCaptureError: Error {
     case engineStopped
     case maxRecoveriesExceeded
+    case invalidInputFormat
 }
 
 @MainActor
@@ -17,6 +18,11 @@ final class AudioCaptureService {
 
         var isRunning: Bool {
             if case .running = self { return true }
+            return false
+        }
+
+        var isRestarting: Bool {
+            if case .restarting = self { return true }
             return false
         }
     }
@@ -32,6 +38,8 @@ final class AudioCaptureService {
     private var recoveryAttempts = 0
     private let maxRecoveryAttempts = 3
     private var healthCheckTimer: Timer?
+    private var isHandlingConfigChange = false
+    private var pendingRecoveryWorkItem: DispatchWorkItem?
     var onRecordingFailed: ((String) -> Void)?
 
     var currentLevel: Float {
@@ -56,17 +64,23 @@ final class AudioCaptureService {
     func startRecording() throws {
         micCollector.reset()
         preResampledSamples = []
+        recoveryAttempts = 0
+        pendingRecoveryWorkItem?.cancel()
+        pendingRecoveryWorkItem = nil
+        isHandlingConfigChange = false
         engineState = .stopped
 
         let engine = AVAudioEngine()
-        installTap(on: engine)
+        try installTap(on: engine)
 
         // When audio hardware changes (AirPods, headphones, USB devices) AVAudioEngine
         // stops and its tap silently goes dead. Re-establish the tap immediately so
         // recording continues without dropping samples.
+        // NOTE: observe without a specific object — during device changes the notification
+        // may arrive with a nil object, which would filter out if we bound to `engine`.
         configChangeObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
-            object: engine,
+            object: nil,
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in self?.handleEngineConfigurationChange() }
@@ -92,12 +106,21 @@ final class AudioCaptureService {
         healthCheckTimer?.invalidate()
         healthCheckTimer = nil
 
+        // Cancel any pending recovery so it doesn't fire after the user stopped.
+        pendingRecoveryWorkItem?.cancel()
+        pendingRecoveryWorkItem = nil
+        isHandlingConfigChange = false
+
         if let observer = configChangeObserver {
             NotificationCenter.default.removeObserver(observer)
             configChangeObserver = nil
         }
-        micEngine?.inputNode.removeTap(onBus: 0)
-        micEngine?.stop()
+        if let engine = micEngine {
+            if engine.isRunning {
+                engine.inputNode.removeTap(onBus: 0)
+            }
+            engine.stop()
+        }
         micEngine = nil
 
         let rawSamples = micCollector.drain()
@@ -111,8 +134,16 @@ final class AudioCaptureService {
     }
 
     private func handleEngineConfigurationChange() {
-        guard let engine = micEngine else { return }
+        // Ignore late notifications after stopRecording().
+        guard engineState.isRunning || engineState.isRestarting else { return }
+        // Coalesce bursts: macOS can fire multiple config-change notifications
+        // in rapid succession while a device transitions.
+        guard !isHandlingConfigChange else { return }
+        isHandlingConfigChange = true
+        defer { isHandlingConfigChange = false }
+
         print("Audio device configuration changed — re-establishing mic tap")
+        engineState = .restarting
 
         // Drain and resample whatever was collected before the device change,
         // so samples collected at the old rate aren't mixed with the new rate.
@@ -122,13 +153,25 @@ final class AudioCaptureService {
             preResampledSamples.append(contentsOf: resampled)
         }
 
-        engine.inputNode.removeTap(onBus: 0)
-        installTap(on: engine)
+        // Fully tear down the existing engine — reusing it after a hardware change
+        // can leave its input node bound to a stale format, which crashes
+        // installTap() with an ObjC exception that Swift cannot catch.
+        if let old = micEngine {
+            if old.isRunning {
+                old.inputNode.removeTap(onBus: 0)
+            }
+            old.stop()
+        }
+        micEngine = nil
 
+        let engine = AVAudioEngine()
         do {
+            try installTap(on: engine)
             engine.prepare()
             try engine.start()
-            recoveryAttempts = 0  // Reset on success
+            micEngine = engine
+            engineState = .running
+            recoveryAttempts = 0
             print("Mic tap restored at \(inputSampleRate) Hz, \(engine.inputNode.outputFormat(forBus: 0).channelCount) ch")
         } catch {
             print("Failed to restart audio engine after device change: \(error)")
@@ -138,6 +181,9 @@ final class AudioCaptureService {
     }
 
     private func checkEngineHealth() {
+        // Only check when we believe we're actively running. If we're currently
+        // restarting (config change in progress) skip — a stale engine.isRunning
+        // read here would double-trigger recovery.
         guard let engine = micEngine, engineState.isRunning else { return }
 
         if !engine.isRunning {
@@ -164,24 +210,39 @@ final class AudioCaptureService {
             preResampledSamples.append(contentsOf: resampled)
         }
 
-        guard let engine = micEngine else { return }
+        // Rebuild the engine from scratch — the old one may be in a bad state.
+        if let old = micEngine {
+            if old.isRunning {
+                old.inputNode.removeTap(onBus: 0)
+            }
+            old.stop()
+        }
+        micEngine = nil
 
-        engine.inputNode.removeTap(onBus: 0)
-        installTap(on: engine)
+        let engine = AVAudioEngine()
 
         do {
+            try installTap(on: engine)
             engine.prepare()
             try engine.start()
+            micEngine = engine
             engineState = .running
+            let attempt = recoveryAttempts
             recoveryAttempts = 0
-            print("✓ Audio engine recovered (attempt \(recoveryAttempts))")
+            print("✓ Audio engine recovered (attempt \(attempt))")
         } catch {
             print("✗ Recovery attempt \(recoveryAttempts) failed: \(error)")
 
-            // Retry after delay with exponential backoff
-            DispatchQueue.main.asyncAfter(deadline: .now() + Double(recoveryAttempts) * 0.5) {
-                [weak self] in self?.attemptRecovery()
+            // Retry after delay with exponential backoff. Track the work item
+            // so stopRecording() can cancel a pending retry.
+            let work = DispatchWorkItem { [weak self] in
+                Task { @MainActor [weak self] in
+                    self?.pendingRecoveryWorkItem = nil
+                    self?.attemptRecovery()
+                }
             }
+            pendingRecoveryWorkItem = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(recoveryAttempts) * 0.5, execute: work)
         }
     }
 
@@ -196,9 +257,20 @@ final class AudioCaptureService {
         onRecordingFailed?(message)
     }
 
-    private func installTap(on engine: AVAudioEngine) {
+    private func installTap(on engine: AVAudioEngine) throws {
         let inputNode = engine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)
+
+        // During a device change (unplug/replug, Bluetooth handoff) macOS can briefly
+        // report a zero sample rate or zero channel count. Passing such a format to
+        // installTap raises an ObjC exception ("required condition is false:
+        // IsFormatSampleRateAndChannelCountValid(format)") that Swift cannot catch,
+        // which manifests as a hard crash. Bail out and let the recovery path retry.
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
+            print("⚠ Input node reported invalid format (\(inputFormat.sampleRate) Hz, \(inputFormat.channelCount) ch) — deferring tap install")
+            throw AudioCaptureError.invalidInputFormat
+        }
+
         inputSampleRate = inputFormat.sampleRate
         let collector = micCollector
 
