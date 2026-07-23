@@ -232,6 +232,34 @@ do {
     assertEqual(snap2, [0.1, 0.2, 0.3, 0.4], "snapshot reflects appends after prior snapshot")
 }
 
+do {
+    // A held snapshot must not alias the collector's internal buffer: a later
+    // append must not mutate the previously-returned array.
+    let collector = AudioSampleCollector()
+    collector.append([0.1, 0.2])
+    let held = collector.snapshot()
+    collector.append([0.3, 0.4])
+    assertEqual(held, [0.1, 0.2], "held snapshot is a distinct copy, unaffected by later appends")
+}
+
+do {
+    let collector = AudioSampleCollector()
+    collector.append([0.1, 0.2, 0.3])
+    let drained = collector.drainKeepingLevel()
+    assertEqual(drained, [0.1, 0.2, 0.3], "drainKeepingLevel returns buffered samples")
+    assert(collector.drain().isEmpty, "drainKeepingLevel clears buffer")
+}
+
+do {
+    let collector = AudioSampleCollector()
+    collector.append([0.5, 0.5, 0.5, 0.5], updateLevel: true)
+    let levelBefore = collector.level
+    assert(levelBefore > 0, "precondition: level is non-zero")
+    _ = collector.drainKeepingLevel()
+    assertEqual(collector.level, levelBefore, accuracy: 0.001,
+                "drainKeepingLevel preserves the level meter (no waveform flicker)")
+}
+
 // MARK: - Summary
 
 print("")

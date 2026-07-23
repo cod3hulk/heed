@@ -101,8 +101,16 @@ final class SystemAudioCollector: NSObject, SCStreamOutput, @unchecked Sendable 
 
     /// Copy the buffered samples and current sample rate without clearing.
     /// Safe to call while the stream continues to deliver audio.
+    ///
+    /// Returns a *distinct* allocation (not a COW alias of `samples`). Returning
+    /// `samples` directly leaves the buffer shared (refcount 2), so the next
+    /// `append` on ScreenCaptureKit's sampleHandlerQueue copy-on-writes the whole
+    /// buffer under the lock. On a long recording that stalls the handler enough
+    /// that SCStream drops/stops delivering audio — system audio silently dies
+    /// for the rest of the recording. `withUnsafeBufferPointer { Array($0) }`
+    /// forces the copy here so the capture callback stays cheap.
     func snapshot() -> (samples: [Float], sampleRate: Double) {
-        sampleLock.withLock { (samples, _sampleRate) }
+        sampleLock.withLock { (samples.withUnsafeBufferPointer { Array($0) }, _sampleRate) }
     }
 
     func drain() -> [Float] {
@@ -117,6 +125,18 @@ final class SystemAudioCollector: NSObject, SCStreamOutput, @unchecked Sendable 
         }
 
         return result
+    }
+
+    /// Drain the buffered samples and current sample rate without resetting the
+    /// level. Used for periodic compaction *during* recording so the raw buffer
+    /// doesn't grow unbounded; leaves `_level` untouched so the live waveform
+    /// meter doesn't flicker to zero every tick.
+    func drainKeepingLevel() -> (samples: [Float], sampleRate: Double) {
+        sampleLock.withLock {
+            let r = samples
+            samples = []
+            return (r, _sampleRate)
+        }
     }
 
     func reset() {
@@ -274,13 +294,28 @@ final class SystemAudioCapture: NSObject, SCStreamDelegate {
         try await scStream.startCapture()
         print("System audio capture started")
 
-        // Health check every 2 seconds to detect silent stream failures
+        // Health check every 2 seconds to detect silent stream failures.
+        // Also compacts the raw buffer to 16kHz so it doesn't grow unbounded.
         healthCheckTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) {
             [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.checkStreamHealth()
+                guard let self else { return }
+                self.checkStreamHealth()
+                self.compactBuffer()
             }
         }
+    }
+
+    /// Drain the live raw buffer, resample it to 16kHz, and fold it into
+    /// `preResampledSamples`. Called on a timer during capture so the raw
+    /// 48kHz buffer never accumulates more than one interval's worth of audio.
+    /// Skipped unless running so a segment isn't resampled at a stale rate
+    /// during a restart (the restart path already drains before switching).
+    private func compactBuffer() {
+        guard streamState.isRunning else { return }
+        let (raw, rate) = collector.drainKeepingLevel()
+        guard !raw.isEmpty else { return }
+        preResampledSamples.append(contentsOf: resampleTo16k(raw, fromRate: rate))
     }
 
     private func checkStreamHealth() {

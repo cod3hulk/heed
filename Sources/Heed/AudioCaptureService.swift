@@ -91,13 +91,28 @@ final class AudioCaptureService {
         self.micEngine = engine
         engineState = .running
 
-        // Health check every 2 seconds to detect silent engine failures
+        // Health check every 2 seconds to detect silent engine failures.
+        // Also compacts the raw buffer to 16kHz so it doesn't grow unbounded.
         healthCheckTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) {
             [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.checkEngineHealth()
+                guard let self else { return }
+                self.checkEngineHealth()
+                self.compactBuffer()
             }
         }
+    }
+
+    /// Drain the live raw buffer, resample it to 16kHz, and fold it into
+    /// `preResampledSamples`. Called on a timer during recording so the raw
+    /// 48kHz buffer never accumulates more than one interval's worth of audio.
+    /// Skipped while restarting so a segment isn't resampled at a stale rate
+    /// mid-device-change (the change handler already drains before switching).
+    private func compactBuffer() {
+        guard engineState.isRunning else { return }
+        let raw = micCollector.drainKeepingLevel()
+        guard !raw.isEmpty else { return }
+        preResampledSamples.append(contentsOf: resampleTo16k(raw, fromRate: inputSampleRate))
     }
 
     /// Return everything captured so far, resampled to 16kHz, without stopping the engine.
