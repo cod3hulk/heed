@@ -72,6 +72,10 @@ final class OverlayWindow {
                 let micLevel = service.currentLevel
                 let sysLevel = self.systemAudioRef?.currentLevel ?? 0
                 self.waveformModel.updateLevel(max(micLevel, sysLevel))
+                // Surface device trouble inline — a silent device change used to leave the
+                // pill happily ticking while capture was degraded or reconnecting.
+                self.waveformModel.healthWarning =
+                    service.engineHealth ?? self.systemAudioRef?.streamHealth
             }
         }
         RunLoop.main.add(levelTimer, forMode: .common)
@@ -336,6 +340,9 @@ final class WaveformModel: ObservableObject {
     @Published var barHeights: [Float] = Array(repeating: 0, count: WaveformModel.barCount)
     @Published var phase: OverlayPhase = .recording
     @Published var elapsedSeconds: Int = 0
+    /// Non-nil while the mic engine or system-audio stream is reconnecting or failed.
+    /// Polled from the level timer so device trouble is visible during recording.
+    @Published var healthWarning: String?
 
     // Q&A state (only meaningful while phase == .recording)
     @Published var qaVisible: Bool = false
@@ -376,6 +383,7 @@ final class WaveformModel: ObservableObject {
         smoothedLevel = 0
         animPhase = 0
         elapsedSeconds = 0
+        healthWarning = nil
         phase = .recording
         qaVisible = false
         qaExchanges = []
@@ -451,9 +459,24 @@ struct RecordingView: View {
 
             pillSeparator.padding(.horizontal, 16)
 
-            // Compact waveform
-            CompactWaveformView(barHeights: model.barHeights)
-                .frame(width: 112, height: 24)
+            // Compact waveform — swapped for a warning while the audio device is in trouble,
+            // so a mid-recording device change is visible instead of silently degrading.
+            if let warning = model.healthWarning {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(Color(red: 1.0, green: 0.72, blue: 0.23))
+                    Text(warning)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.white.opacity(0.9))
+                        .lineLimit(1)
+                }
+                .frame(minWidth: 112, alignment: .leading)
+                .help(warning)
+            } else {
+                CompactWaveformView(barHeights: model.barHeights)
+                    .frame(width: 112, height: 24)
+            }
 
             pillSeparator.padding(.horizontal, 16)
 
