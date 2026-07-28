@@ -1,5 +1,10 @@
 import AppKit
 
+extension Notification.Name {
+    /// Posted after Settings saves so the meeting detector can start/stop live.
+    static let autoDetectMeetingsChanged = Notification.Name("autoDetectMeetingsChanged")
+}
+
 // MARK: - KeyBinding
 
 struct KeyBinding: Codable, Equatable {
@@ -93,6 +98,9 @@ final class ConfigManager: ObservableObject {
     @Published var feedbackPrompt: String
     @Published var qaPrompt: String
 
+    // General
+    @Published var autoDetectMeetings: Bool
+
     static let defaultSummaryPrompt =
         "Summarize this meeting transcript concisely. List key discussion topics, decisions made, and action items. Be brief and use bullet points."
 
@@ -118,6 +126,9 @@ final class ConfigManager: ObservableObject {
         summaryPrompt  = UserDefaults.standard.string(forKey: "prompt.summary")  ?? Self.defaultSummaryPrompt
         feedbackPrompt = UserDefaults.standard.string(forKey: "prompt.feedback") ?? Self.defaultFeedbackPrompt
         qaPrompt       = UserDefaults.standard.string(forKey: "prompt.qa")       ?? Self.defaultQAPrompt
+
+        // Default ON. Plain bool(forKey:) returns false for an unset key, so nil-check the object.
+        autoDetectMeetings = (UserDefaults.standard.object(forKey: "autoDetectMeetings") as? Bool) ?? true
     }
 
     func save() {
@@ -136,6 +147,8 @@ final class ConfigManager: ObservableObject {
         UserDefaults.standard.set(summaryPrompt,  forKey: "prompt.summary")
         UserDefaults.standard.set(feedbackPrompt, forKey: "prompt.feedback")
         UserDefaults.standard.set(qaPrompt,       forKey: "prompt.qa")
+
+        UserDefaults.standard.set(autoDetectMeetings, forKey: "autoDetectMeetings")
     }
 
     func resetKeyBindings() {

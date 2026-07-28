@@ -57,6 +57,7 @@ final class SettingsViewModel: ObservableObject {
 
     // General
     @Published var launchAtLogin: Bool
+    @Published var autoDetectMeetings: Bool
 
     var onClose: (() -> Void)?
     private var monitor: Any?
@@ -77,6 +78,7 @@ final class SettingsViewModel: ObservableObject {
         feedbackPrompt = cfg.feedbackPrompt
         qaPrompt       = cfg.qaPrompt
         launchAtLogin  = LoginItemManager.isEnabled
+        autoDetectMeetings = cfg.autoDetectMeetings
     }
 
     // MARK: Key recording
@@ -124,7 +126,9 @@ final class SettingsViewModel: ObservableObject {
         cfg.summaryPrompt   = summaryPrompt
         cfg.feedbackPrompt   = feedbackPrompt
         cfg.qaPrompt         = qaPrompt
+        cfg.autoDetectMeetings = autoDetectMeetings
         cfg.save()
+        NotificationCenter.default.post(name: .autoDetectMeetingsChanged, object: nil)
         do {
             try LoginItemManager.setEnabled(launchAtLogin)
         } catch {
@@ -156,6 +160,7 @@ final class SettingsViewModel: ObservableObject {
         feedbackPrompt = cfg.feedbackPrompt
         qaPrompt       = cfg.qaPrompt
         launchAtLogin  = LoginItemManager.isEnabled
+        autoDetectMeetings = cfg.autoDetectMeetings
     }
 }
 
@@ -233,6 +238,27 @@ struct GeneralTab: View {
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(NSColor.separatorColor), lineWidth: 0.5))
 
             Text("Heed will start automatically when you log in to your Mac. The app must be installed in /Applications for this to take effect.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(spacing: 0) {
+                HStack {
+                    Text("Auto-detect meetings")
+                        .frame(width: 160, alignment: .leading)
+                    Spacer()
+                    Toggle("", isOn: $vm.autoDetectMeetings)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+            }
+            .background(Color(NSColor.controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(NSColor.separatorColor), lineWidth: 0.5))
+
+            Text("When you join or start a Zoom meeting, Heed will offer to start recording. Nothing is recorded until you click Start.")
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
