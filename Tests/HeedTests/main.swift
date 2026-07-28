@@ -174,6 +174,71 @@ do {
     assertEqual(output[2], 0.9, accuracy: 0.001, "remainder preserved")
 }
 
+// MARK: - downmixToMono Tests
+
+print("▸ AudioUtilities.downmixToMono")
+
+/// Build non-interleaved channel pointers the way AVAudioPCMBuffer.floatChannelData does,
+/// run the downmix, then free. Keeps each test case a one-liner.
+func downmix(_ channels: [[Float]]) -> [Float] {
+    let frameCount = channels.first?.count ?? 0
+    let ptrs = UnsafeMutablePointer<UnsafeMutablePointer<Float>>.allocate(capacity: channels.count)
+    for (i, ch) in channels.enumerated() {
+        let buf = UnsafeMutablePointer<Float>.allocate(capacity: max(frameCount, 1))
+        for (j, s) in ch.enumerated() { buf[j] = s }
+        ptrs[i] = buf
+    }
+    defer {
+        for i in 0..<channels.count { ptrs[i].deallocate() }
+        ptrs.deallocate()
+    }
+    return AudioUtilities.downmixToMono(
+        channelData: ptrs, channelCount: channels.count, frameCount: frameCount)
+}
+
+do {
+    assertEqual(AudioUtilities.downmixChannelCount(forInputChannelCount: 1), 1, "mono uses 1")
+    assertEqual(AudioUtilities.downmixChannelCount(forInputChannelCount: 2), 2, "stereo averages both")
+    assertEqual(AudioUtilities.downmixChannelCount(forInputChannelCount: 3), 1, "3ch uses first only")
+    assertEqual(AudioUtilities.downmixChannelCount(forInputChannelCount: 4), 1, "4ch uses first only")
+    assertEqual(AudioUtilities.downmixChannelCount(forInputChannelCount: 8), 1, "8ch uses first only")
+}
+
+do {
+    let out = downmix([[0.1, -0.2, 0.3]])
+    assertEqual(out, [0.1, -0.2, 0.3], "1 channel passes through untouched")
+}
+
+do {
+    let out = downmix([[1.0, 0.0], [0.0, 1.0]])
+    assertEqual(out[0], 0.5, accuracy: 0.001, "stereo averages both channels")
+    assertEqual(out[1], 0.5, accuracy: 0.001, "stereo averages both channels")
+}
+
+do {
+    // REGRESSION: a Focusrite Scarlett Solo 4th Gen reports 4 input channels where only
+    // ch1 carries the mic. Averaging all four attenuated the voice by ~12 dB, which made
+    // a mid-recording device switch produce a near-silent recording with no error.
+    let mic: [Float] = [0.8, -0.8, 0.4]
+    let out = downmix([mic, [0, 0, 0], [0, 0, 0], [0, 0, 0]])
+    assertEqual(out, mic, "4ch interface preserves mic level (no 1/4 attenuation)")
+}
+
+do {
+    // Loopback channels carrying system audio must not fold back into the mic signal —
+    // SystemAudioCapture already contributes that, so it would double-count.
+    let out = downmix([[0.5, 0.5], [0, 0], [0.9, -0.9], [0.9, -0.9]])
+    assertEqual(out, [0.5, 0.5], "loopback channels excluded from mono fold")
+}
+
+do {
+    assert(downmix([]).isEmpty, "zero channels → empty")
+    let empty = AudioUtilities.downmixToMono(
+        channelData: UnsafeMutablePointer<UnsafeMutablePointer<Float>>.allocate(capacity: 1),
+        channelCount: 1, frameCount: 0)
+    assert(empty.isEmpty, "zero frames → empty")
+}
+
 // MARK: - AudioSampleCollector Tests
 
 print("▸ AudioSampleCollector")

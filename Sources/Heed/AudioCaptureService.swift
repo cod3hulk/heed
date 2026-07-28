@@ -305,25 +305,24 @@ final class AudioCaptureService {
             let frameCount = Int(buffer.frameLength)
             let channelCount = Int(buffer.format.channelCount)
 
-            // Mix all channels to mono by averaging
-            var monoSamples = [Float](repeating: 0, count: frameCount)
-            for ch in 0..<channelCount {
-                let channel = channelData[ch]
-                for i in 0..<frameCount {
-                    monoSamples[i] += channel[i]
-                }
-            }
-            if channelCount > 1 {
-                let scale = 1.0 / Float(channelCount)
-                for i in 0..<frameCount {
-                    monoSamples[i] *= scale
-                }
-            }
+            // Fold to mono using only the channels that actually carry the mic —
+            // averaging every channel of a multi-input interface attenuates the voice.
+            // AudioUtilities is a plain enum with static methods, so this is safe to
+            // call from the realtime audio thread.
+            let monoSamples = AudioUtilities.downmixToMono(
+                channelData: channelData,
+                channelCount: channelCount,
+                frameCount: frameCount
+            )
+            guard !monoSamples.isEmpty else { return }
 
             collector.append(monoSamples, updateLevel: true)
         }
 
-        print("Recording started at \(inputFormat.sampleRate) Hz, \(inputFormat.channelCount) ch")
+        let used = AudioUtilities.downmixChannelCount(
+            forInputChannelCount: Int(inputFormat.channelCount)
+        )
+        print("Recording started at \(inputFormat.sampleRate) Hz, \(inputFormat.channelCount) ch (using \(used) for mono)")
     }
 
     private func resampleTo16k(_ samples: [Float], fromRate: Double) -> [Float] {
