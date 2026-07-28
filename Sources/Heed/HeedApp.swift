@@ -11,6 +11,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let systemAudio = SystemAudioCapture()
     private let shortcutManager = GlobalShortcutManager()
     private let overlay = OverlayWindow()
+    private let meetingDetector = MeetingDetector()
+    private let meetingPrompt = MeetingPromptWindow()
     private var recordingMenuItem: NSMenuItem!
     private lazy var settingsWindowController = SettingsWindowController()
 
@@ -30,6 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusItem()
         requestPermissionsUpfront()
         setupGlobalShortcut()
+        setupMeetingDetector()
         overlay.onStopRecording = { [weak self] in
             self?.toggleRecording()
         }
@@ -69,6 +72,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.overlay.toggleQA()
         }
         shortcutManager.start()
+    }
+
+    private func setupMeetingDetector() {
+        // Only offer to record when idle — never interrupt an in-progress recording/transcription.
+        meetingDetector.shouldPrompt = { [weak self] in self?.appPhase == .idle }
+        meetingDetector.onMeetingDetected = { [weak self] in
+            guard let self, self.appPhase == .idle else { return }
+            self.meetingPrompt.show(
+                onStart: { [weak self] in
+                    self?.meetingPrompt.hide()
+                    self?.toggleRecording()
+                },
+                onDismiss: { [weak self] in
+                    self?.meetingPrompt.hide()
+                }
+            )
+        }
+        meetingDetector.onMeetingEnded = { [weak self] in
+            // Auto-dismiss a still-open prompt if the meeting ended before the user answered.
+            self?.meetingPrompt.hide()
+        }
+
+        if ConfigManager.shared.autoDetectMeetings {
+            meetingDetector.start()
+        }
+
+        // Pick up the Settings toggle live (posted from SettingsViewModel.saveAndClose()).
+        NotificationCenter.default.addObserver(
+            forName: .autoDetectMeetingsChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                if ConfigManager.shared.autoDetectMeetings {
+                    self.meetingDetector.start()
+                } else {
+                    self.meetingDetector.stop()
+                    self.meetingPrompt.hide()
+                }
+            }
+        }
     }
 
     // A hidden main menu is required for copy/paste (Cmd+C/V/X/A) to work in

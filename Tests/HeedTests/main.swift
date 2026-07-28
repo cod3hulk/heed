@@ -260,6 +260,38 @@ do {
                 "drainKeepingLevel preserves the level meter (no waveform flicker)")
 }
 
+// MARK: - MeetingDetectionState
+
+print("")
+print("▸ MeetingDetectionState")
+
+do {
+    // Rising edge prompts exactly once; staying active does not re-prompt.
+    var s = MeetingDetectionState(debounceInterval: 3)
+    assertEqual(s.observe(rawActive: false, now: 0), .none, "idle stays none")
+    assertEqual(s.observe(rawActive: true,  now: 1), .meetingStarted, "rising edge prompts")
+    assertEqual(s.observe(rawActive: true,  now: 2), .none, "still active, no re-prompt")
+    assertEqual(s.observe(rawActive: true,  now: 9), .none, "still active later, no re-prompt")
+}
+
+do {
+    // Falling edge is debounced, then a genuinely new meeting re-prompts.
+    var s = MeetingDetectionState(debounceInterval: 3)
+    assertEqual(s.observe(rawActive: true,  now: 0), .meetingStarted, "rising edge prompts")
+    assertEqual(s.observe(rawActive: false, now: 1), .none, "within debounce, not ended yet")
+    assertEqual(s.observe(rawActive: false, now: 5), .meetingEnded, "ended after debounce elapsed")
+    assertEqual(s.observe(rawActive: true,  now: 6), .meetingStarted, "new session prompts again")
+}
+
+do {
+    // Leave/rejoin within the debounce window = same session: no end, no double prompt.
+    var s = MeetingDetectionState(debounceInterval: 3)
+    assertEqual(s.observe(rawActive: true,  now: 0),  .meetingStarted, "rising edge prompts")
+    assertEqual(s.observe(rawActive: false, now: 1),  .none, "brief drop starts debounce")
+    assertEqual(s.observe(rawActive: true,  now: 2),  .none, "rejoin cancels end, no new prompt")
+    assertEqual(s.observe(rawActive: true,  now: 10), .none, "still same session")
+}
+
 // MARK: - Summary
 
 print("")
