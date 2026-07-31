@@ -7,17 +7,22 @@ import SwiftUI
 /// `NSAlert.runModal()` — that blocks the run loop and activates the app.
 @MainActor
 final class MeetingPromptWindow {
+    enum Kind {
+        case offerStart
+        case offerStop
+    }
+
     private var panel: NSPanel?
     private var autoDismissTimer: Timer?
 
     var isVisible: Bool { panel != nil }
 
-    /// Show the prompt. No-op if already visible. `onStart`/`onDismiss` are invoked on tap;
+    /// Show the prompt. No-op if already visible. `onConfirm`/`onDismiss` are invoked on tap;
     /// the caller is responsible for calling `hide()` (the wiring in `AppDelegate` does).
-    func show(onStart: @escaping () -> Void, onDismiss: @escaping () -> Void) {
+    func show(kind: Kind, onConfirm: @escaping () -> Void, onDismiss: @escaping () -> Void) {
         guard panel == nil else { return }
 
-        let view = MeetingPromptView(onStart: onStart, onDismiss: onDismiss)
+        let view = MeetingPromptView(kind: kind, onConfirm: onConfirm, onDismiss: onDismiss)
         let hosting = NSHostingView(rootView: view)
 
         let width: CGFloat = 340
@@ -72,22 +77,58 @@ final class MeetingPromptWindow {
 // MARK: - View
 
 private struct MeetingPromptView: View {
-    let onStart: () -> Void
+    let kind: MeetingPromptWindow.Kind
+    let onConfirm: () -> Void
     let onDismiss: () -> Void
 
     private static let accentColor = Color(red: 0.369, green: 0.361, blue: 0.902) // #5e5ce6
 
+    private var icon: String {
+        switch kind {
+        case .offerStart: return "ear.fill"
+        case .offerStop: return "stop.circle.fill"
+        }
+    }
+
+    private var title: String {
+        switch kind {
+        case .offerStart: return "Start Heed recording?"
+        case .offerStop: return "Stop Heed recording?"
+        }
+    }
+
+    private var subtitle: String {
+        switch kind {
+        case .offerStart: return "Zoom meeting detected"
+        case .offerStop: return "Zoom meeting ended"
+        }
+    }
+
+    private var dismissTitle: String {
+        switch kind {
+        case .offerStart: return "Dismiss"
+        case .offerStop: return "Keep Recording"
+        }
+    }
+
+    private var confirmTitle: String {
+        switch kind {
+        case .offerStart: return "Start"
+        case .offerStop: return "Stop"
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 10) {
-                Image(systemName: "ear.fill")
+                Image(systemName: icon)
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundColor(Self.accentColor)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Start Heed recording?")
+                    Text(title)
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundColor(.white)
-                    Text("Zoom meeting detected")
+                    Text(subtitle)
                         .font(.system(size: 11))
                         .foregroundColor(.white.opacity(0.55))
                 }
@@ -97,7 +138,7 @@ private struct MeetingPromptView: View {
             HStack(spacing: 10) {
                 Spacer()
                 Button(action: onDismiss) {
-                    Text("Dismiss")
+                    Text(dismissTitle)
                         .font(.system(size: 12, weight: .medium))
                         .foregroundColor(.white.opacity(0.7))
                         .padding(.horizontal, 14)
@@ -107,8 +148,8 @@ private struct MeetingPromptView: View {
                 }
                 .buttonStyle(.plain)
 
-                Button(action: onStart) {
-                    Text("Start")
+                Button(action: onConfirm) {
+                    Text(confirmTitle)
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundColor(.white)
                         .padding(.horizontal, 18)

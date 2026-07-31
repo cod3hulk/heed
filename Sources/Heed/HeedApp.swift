@@ -75,12 +75,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setupMeetingDetector() {
-        // Only offer to record when idle — never interrupt an in-progress recording/transcription.
-        meetingDetector.shouldPrompt = { [weak self] in self?.appPhase == .idle }
+        // Offer to start recording when idle, or offer to stop when a recording is in progress —
+        // never interrupt transcription/processing.
+        meetingDetector.shouldPrompt = { [weak self] in
+            guard let self else { return false }
+            return self.appPhase == .idle || self.appPhase == .recording
+        }
         meetingDetector.onMeetingDetected = { [weak self] in
             guard let self, self.appPhase == .idle else { return }
             self.meetingPrompt.show(
-                onStart: { [weak self] in
+                kind: .offerStart,
+                onConfirm: { [weak self] in
                     self?.meetingPrompt.hide()
                     self?.toggleRecording()
                 },
@@ -90,8 +95,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
         }
         meetingDetector.onMeetingEnded = { [weak self] in
-            // Auto-dismiss a still-open prompt if the meeting ended before the user answered.
-            self?.meetingPrompt.hide()
+            guard let self else { return }
+            if self.appPhase == .recording {
+                self.meetingPrompt.show(
+                    kind: .offerStop,
+                    onConfirm: { [weak self] in
+                        self?.meetingPrompt.hide()
+                        self?.toggleRecording()
+                    },
+                    onDismiss: { [weak self] in
+                        self?.meetingPrompt.hide()
+                    }
+                )
+            } else {
+                // Auto-dismiss a still-open start-prompt if the meeting ended before the user answered.
+                self.meetingPrompt.hide()
+            }
         }
 
         if ConfigManager.shared.autoDetectMeetings {
