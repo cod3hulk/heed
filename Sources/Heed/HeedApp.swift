@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let shortcutManager = GlobalShortcutManager()
     private let overlay = OverlayWindow()
     private let meetingDetector = MeetingDetector()
+    private let diarizationService = SpeakerDiarizationService.shared
     private let meetingPrompt = MeetingPromptWindow()
     private var recordingMenuItem: NSMenuItem!
     private lazy var settingsWindowController = SettingsWindowController()
@@ -356,11 +357,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
             print("Transcribing \(String(format: "%.1f", Double(mixed.count) / 16000))s of audio…")
-            let transcript = await ModelManager.shared.transcribe(mixed) ?? ""
+            async let diarizedSegments = diarizationService.diarize(samples16k: mixed)
+            let asrResult = await ModelManager.shared.transcribeDetailed(mixed)
+            let transcript = asrResult?.text ?? ""
+            let speakerSegments = await diarizedSegments
             print("Transcript: \(transcript)")
 
-            let displayText = transcript.isEmpty ? "(no speech detected)" : transcript
-            pendingTranscript = transcript
+            let tokens = asrResult?.tokenTimings?.map {
+                TranscriptToken(text: $0.token, startTime: $0.startTime, endTime: $0.endTime, confidence: $0.confidence)
+            } ?? []
+            let speakerTranscript = SpeakerDiarizationFormatter.format(
+                transcript: transcript,
+                tokens: tokens,
+                speakerSegments: speakerSegments
+            )
+            let displayText = transcript.isEmpty ? "(no speech detected)" : speakerTranscript
+            pendingTranscript = speakerTranscript
             overlay.transitionTo(.done(displayText))
             appPhase = .done
             recordingMenuItem.title = "Start Recording"
@@ -476,7 +488,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let model    = ConfigManager.shared.ollamaModel.trimmingCharacters(in: .whitespaces)
             return await runOllama(transcript: transcript, prompt: prompt,
                                    endpoint: endpoint.isEmpty ? "http://localhost:11434" : endpoint,
-                                   model:    model.isEmpty    ? "llama3"                 : model)
+                                   model:    model.isEmpty    ? "qwen3:4b-instruct-2507-q4_K_M" : model)
         }
     }
 

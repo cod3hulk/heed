@@ -14,7 +14,7 @@ final class ModelManager {
 
     // AsrManager isn't documented as reentrant. Serialize transcribe() calls
     // so a live Q&A ask can't overlap with the final stop-and-transcribe.
-    private var transcribeChain: Task<String?, Never> = Task { nil }
+    private var transcribeChain: Task<ASRResult?, Never> = Task { nil }
 
     /// True if the Core ML model bundles are already on disk.
     var isModelCached: Bool {
@@ -33,7 +33,7 @@ final class ModelManager {
                 do {
                     let models = try await AsrModels.loadFromCache()
                     let mgr = AsrManager()
-                    try await mgr.loadModels(models)
+                    try await mgr.initialize(models: models)
                     self.asrManager = mgr
                     self.isReady = true
                     completion(true)
@@ -48,15 +48,18 @@ final class ModelManager {
     }
 
     func transcribe(_ samples: [Float]) async -> String? {
+        await transcribeDetailed(samples)?.text
+    }
+
+    func transcribeDetailed(_ samples: [Float]) async -> ASRResult? {
         let previous = transcribeChain
         let asrManager = self.asrManager
         let ready = self.isReady
-        let task = Task { () -> String? in
+        let task = Task { () -> ASRResult? in
             _ = await previous.value
             guard let asrManager, ready else { return nil }
             do {
-                let result = try await asrManager.transcribe(samples, source: .microphone)
-                return result.text
+                return try await asrManager.transcribe(samples, source: .microphone)
             } catch {
                 print("Transcription error: \(error)")
                 return nil
@@ -101,7 +104,7 @@ final class ModelManager {
                     }
                 })
                 let mgr = AsrManager()
-                try await mgr.loadModels(models)
+                try await mgr.initialize(models: models)
                 self.asrManager = mgr
                 self.isReady = true
                 progressModel.status = "Download complete!"

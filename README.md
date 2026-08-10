@@ -7,6 +7,7 @@ A macOS menubar app that records meetings, transcribes locally via [Parakeet TDT
 - **Menubar-only** — no dock icon, stays out of the way
 - **Mic + system audio** — captures your voice and meeting app audio (Zoom, Teams, Google Meet, etc.) simultaneously via ScreenCaptureKit
 - **Local transcription** — Parakeet TDT 0.6B V3 Core ML model runs entirely on-device (~600 MB one-time download)
+- **Speaker diarization MVP** — locally labels speaker turns (`Speaker 0`, `Speaker 1`, …) when diarization models are available
 - **Global shortcut** — `⇧⌘R` starts and stops recording from any app
 - **Post-transcription actions** — after transcription, press `⌘1` to summarize or `⌘2` for meeting feedback
 - **LLM providers** — Claude CLI, Gemini CLI, or Ollama; configurable in Settings
@@ -39,7 +40,7 @@ make install
 make clean
 ```
 
-On first launch, Heed will prompt you to download the Parakeet Core ML model (~600 MB) from Hugging Face. This is a one-time download stored at `~/Library/Application Support/FluidAudio/Models/`.
+On first launch, Heed will prompt you to download the Parakeet Core ML model (~600 MB) from Hugging Face. This is a one-time download stored at `~/Library/Application Support/FluidAudio/Models/`. Speaker diarization uses FluidAudio's local offline diarization models and falls back to a plain transcript if those models are unavailable.
 
 ## Usage
 
@@ -109,7 +110,7 @@ Choose a provider and configure it:
 |----------|-------------|--------|
 | **Claude CLI** | Shells out to `claude` binary via `zsh -l`; transcript piped via stdin | Optional path to binary (leave blank to use `$PATH`) |
 | **Gemini CLI** | Shells out to `gemini` binary via `zsh -l`; transcript piped via stdin | Optional path to binary (leave blank to use `$PATH`) |
-| **Ollama** | HTTP POST to `/api/generate` (stream: false) | Endpoint URL (default `http://localhost:11434`) + model name (default `llama3`) |
+| **Ollama** | HTTP POST to `/api/generate` (stream: false) | Endpoint URL (default `http://localhost:11434`) + model name (default `qwen3:4b-instruct-2507-q4_K_M`) |
 
 CLI providers run via a `zsh` login shell so they inherit your full environment (auth tokens, Node.js path, etc.).
 

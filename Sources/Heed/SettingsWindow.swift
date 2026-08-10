@@ -418,9 +418,9 @@ struct LLMTab: View {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Model")
                             .font(.headline)
-                        TextField("llama3", text: $vm.ollamaModel)
+                        TextField("qwen3:4b-instruct-2507-q4_K_M", text: $vm.ollamaModel)
                             .textFieldStyle(.roundedBorder)
-                        Text("Must match a model you have pulled in Ollama (e.g. llama3, mistral, phi3).")
+                        Text("Must match a model you have pulled in Ollama (e.g. qwen3:4b-instruct-2507-q4_K_M, llama3, mistral).")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }

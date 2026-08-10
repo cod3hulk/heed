@@ -91,7 +91,7 @@ final class ConfigManager: ObservableObject {
     @Published var claudeCLIPath: String   // empty = resolve via $PATH in zsh login shell
     @Published var geminiCLIPath: String   // empty = resolve via $PATH in zsh login shell
     @Published var ollamaEndpoint: String  // empty = http://localhost:11434
-    @Published var ollamaModel: String     // empty = llama3
+    @Published var ollamaModel: String     // empty = qwen3:4b-instruct-2507-q4_K_M
 
     // Prompts
     @Published var summaryPrompt: String

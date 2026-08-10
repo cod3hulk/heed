@@ -357,6 +357,46 @@ do {
     assertEqual(s.observe(rawActive: true,  now: 10), .none, "still same session")
 }
 
+// MARK: - Speaker diarization formatting
+
+print("")
+print("▸ SpeakerDiarizationFormatter")
+
+do {
+    let tokens = [
+        TranscriptToken(text: "▁Hello", startTime: 0.1, endTime: 0.4),
+        TranscriptToken(text: "▁there", startTime: 0.5, endTime: 0.8),
+        TranscriptToken(text: "▁Hi", startTime: 1.2, endTime: 1.4),
+        TranscriptToken(text: "▁back", startTime: 1.5, endTime: 1.8),
+    ]
+    let segments = [
+        SpeakerSegment(speakerID: "speaker_0", startTime: 0, endTime: 1.0, confidence: 0.9),
+        SpeakerSegment(speakerID: "speaker_1", startTime: 1.0, endTime: 2.0, confidence: 0.8),
+    ]
+    let turns = SpeakerDiarizationFormatter.makeTurns(transcript: "Hello there Hi back", tokens: tokens, speakerSegments: segments)
+    assertEqual(turns.count, 2, "two speaker turns")
+    assertEqual(turns[0].displayName, "Speaker 0", "first speaker label")
+    assertEqual(turns[0].text, "Hello there", "first speaker text")
+    assertEqual(turns[1].displayName, "Speaker 1", "second speaker label")
+    assertEqual(turns[1].text, "Hi back", "second speaker text")
+}
+
+do {
+    let segments = [SpeakerSegment(speakerID: "speaker_0", startTime: 0, endTime: 3.0, confidence: 0.2)]
+    let formatted = SpeakerDiarizationFormatter.format(
+        transcript: "low confidence speech",
+        tokens: [TranscriptToken(text: "▁low", startTime: 0, endTime: 0.4)],
+        speakerSegments: segments
+    )
+    assert(formatted.contains("Unknown speaker"), "low-confidence diarization uses fallback label")
+}
+
+do {
+    let segments = [SpeakerSegment(speakerID: "speaker_1", startTime: 0, endTime: 5.0)]
+    let renamed = SpeakerDiarizationFormatter.applySpeakerName("Ada", to: "speaker_1", in: segments)
+    assertEqual(renamed[0].displayName, "Ada", "manual speaker rename support in data model")
+}
+
 // MARK: - Summary
 
 print("")
