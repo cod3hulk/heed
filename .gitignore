@@ -5,3 +5,5 @@ build/
 *.xcworkspace
 .DS_Store
 Package.resolved
+.tokensave/
+.headroom/
