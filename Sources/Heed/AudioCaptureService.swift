@@ -71,7 +71,6 @@ final class AudioCaptureService {
         engineState = .stopped
 
         let engine = AVAudioEngine()
-        try installTap(on: engine)
 
         // When audio hardware changes (AirPods, headphones, USB devices) AVAudioEngine
         // stops and its tap silently goes dead. Re-establish the tap immediately so
@@ -86,8 +85,7 @@ final class AudioCaptureService {
             Task { @MainActor [weak self] in self?.handleEngineConfigurationChange() }
         }
 
-        engine.prepare()
-        try engine.start()
+        try configureAndStart(engine)
         self.micEngine = engine
         engineState = .running
 
@@ -189,9 +187,7 @@ final class AudioCaptureService {
 
         let engine = AVAudioEngine()
         do {
-            try installTap(on: engine)
-            engine.prepare()
-            try engine.start()
+            try configureAndStart(engine)
             micEngine = engine
             engineState = .running
             recoveryAttempts = 0
@@ -245,9 +241,7 @@ final class AudioCaptureService {
         let engine = AVAudioEngine()
 
         do {
-            try installTap(on: engine)
-            engine.prepare()
-            try engine.start()
+            try configureAndStart(engine)
             micEngine = engine
             engineState = .running
             let attempt = recoveryAttempts
@@ -282,7 +276,14 @@ final class AudioCaptureService {
 
     private func installTap(on engine: AVAudioEngine) throws {
         let inputNode = engine.inputNode
-        let inputFormat = inputNode.outputFormat(forBus: 0)
+        // Use the *hardware* input format for the tap. AVAudioEngine asserts
+        // `format.sampleRate == inputHWFormat.sampleRate` inside installTapOnNode and
+        // raises an uncatchable ObjC exception (hard crash) if they differ. After a
+        // setDeviceID() device switch the node's `outputFormat` can still report the
+        // previous device's sample rate while the hardware is already on the new rate,
+        // so passing outputFormat crashed the app. inputFormat(forBus:) is exactly the
+        // value the assertion checks against, so it always matches.
+        let inputFormat = inputNode.inputFormat(forBus: 0)
 
         // During a device change (unplug/replug, Bluetooth handoff) macOS can briefly
         // report a zero sample rate or zero channel count. Passing such a format to
@@ -327,5 +328,27 @@ final class AudioCaptureService {
 
     private func resampleTo16k(_ samples: [Float], fromRate: Double) -> [Float] {
         AudioUtilities.resampleTo16k(samples, fromRate: fromRate)
+    }
+
+    // MARK: - Engine setup
+
+    /// Install the capture tap and start the mic engine without explicitly selecting
+    /// an input device. AVAudioEngine's default input aggregate already tracks the
+    /// system default device.
+    private func configureAndStart(_ engine: AVAudioEngine) throws {
+        // A fresh AVAudioEngine binds its input node to a private
+        // "CADefaultDeviceAggregate" device that dynamically tracks the *system
+        // default* input device (and follows the user switching it), so we do NOT
+        // select a device ourselves. Forcing setDeviceID() onto the raw device
+        // switched off that aggregate onto a different sample rate, triggering a
+        // configuration-change storm that stopped the engine and killed the mic.
+        //
+        // Install the tap first: accessing engine.inputNode materialises the input
+        // node, which prepare()/start() require (Initialize asserts a node exists).
+        // installTap() uses the hardware input format so it always matches
+        // AVAudioEngine's internal assertion regardless of the device's sample rate.
+        try installTap(on: engine)
+        engine.prepare()
+        try engine.start()
     }
 }

@@ -23,18 +23,18 @@ public enum AudioUtilities {
 
     /// How many leading channels to average when folding a multi-channel input to mono.
     ///
-    /// Deliberately never *all* of them. Multi-input USB interfaces expose channels that
-    /// carry no voice: a Focusrite Scarlett Solo 4th Gen reports 4 input channels where
-    /// ch1 is the XLR mic, ch2 the (usually empty) instrument jack and ch3/4 a loopback
-    /// pair. Averaging across all four divides the mic by 4 (≈ −12 dB) and folds system
-    /// audio back in through the loopback — the recording keeps running but comes out
-    /// unusably quiet, with no error to show for it.
+    /// Always just the first channel for any multi-channel device. Multi-input USB
+    /// interfaces expose channels that carry no voice, and even a 2-channel interface
+    /// like a Focusrite Scarlett Solo puts the XLR mic on ch1 while ch2 is the (usually
+    /// empty) instrument jack. Averaging ch1 with a silent ch2 halves the mic (≈ −6 dB);
+    /// wider interfaces attenuate further and can fold system audio back in through a
+    /// loopback pair — the recording keeps running but comes out unusably quiet, with no
+    /// error to show for it.
     ///
-    /// - 1 channel → that channel
-    /// - 2 channels → both, averaged (a genuine stereo mic)
-    /// - 3+ channels → the first channel only (the primary input on every interface tested)
+    /// - 1 channel  → that channel
+    /// - 2+ channels → the first channel only (the primary mic input on every interface tested)
     public static func downmixChannelCount(forInputChannelCount count: Int) -> Int {
-        count == 2 ? 2 : 1
+        1
     }
 
     /// Fold a non-interleaved multi-channel buffer down to mono, using only the channels

@@ -198,7 +198,7 @@ func downmix(_ channels: [[Float]]) -> [Float] {
 
 do {
     assertEqual(AudioUtilities.downmixChannelCount(forInputChannelCount: 1), 1, "mono uses 1")
-    assertEqual(AudioUtilities.downmixChannelCount(forInputChannelCount: 2), 2, "stereo averages both")
+    assertEqual(AudioUtilities.downmixChannelCount(forInputChannelCount: 2), 1, "2ch uses first only")
     assertEqual(AudioUtilities.downmixChannelCount(forInputChannelCount: 3), 1, "3ch uses first only")
     assertEqual(AudioUtilities.downmixChannelCount(forInputChannelCount: 4), 1, "4ch uses first only")
     assertEqual(AudioUtilities.downmixChannelCount(forInputChannelCount: 8), 1, "8ch uses first only")
@@ -210,9 +210,11 @@ do {
 }
 
 do {
+    // A 2-channel interface (e.g. Focusrite Scarlett Solo) puts the mic on ch1 and an
+    // empty instrument jack on ch2. Averaging would halve the mic level, so take ch1 only.
     let out = downmix([[1.0, 0.0], [0.0, 1.0]])
-    assertEqual(out[0], 0.5, accuracy: 0.001, "stereo averages both channels")
-    assertEqual(out[1], 0.5, accuracy: 0.001, "stereo averages both channels")
+    assertEqual(out[0], 1.0, accuracy: 0.001, "2ch takes ch1 only (no attenuation)")
+    assertEqual(out[1], 0.0, accuracy: 0.001, "2ch takes ch1 only (no attenuation)")
 }
 
 do {
